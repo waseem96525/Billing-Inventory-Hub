@@ -17,6 +17,10 @@
         <form id="login-form" class="stack-form">
           <input id="login-username" placeholder="Username" required />
           <input id="login-password" type="password" placeholder="Password" required />
+          <label style="display: flex; align-items: center; gap: 8px; margin: 10px 0;">
+            <input id="login-remember" type="checkbox" />
+            <span>Remember me on this device</span>
+          </label>
           <button class="primary" type="submit">Sign in</button>
           <p class="small">Demo accounts: admin / admin123, cashier / cashier123</p>
           <p id="login-error" class="login-error hidden"></p>
@@ -124,6 +128,25 @@
             <div>
               <p class="eyebrow">Management</p>
               <h2 id="admin-title">Admin Console</h2>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>👥 Manage Users (Cross-Device)</h3>
+            <form id="user-form" class="stack-form">
+              <div class="form-grid">
+                <input id="user-username" placeholder="New username" />
+                <input id="user-password" type="password" placeholder="Password" />
+                <select id="user-role">
+                  <option value="admin">Admin</option>
+                  <option value="cashier">Cashier</option>
+                </select>
+              </div>
+              <button class="primary" type="submit">Add User</button>
+            </form>
+            <div style="margin-top: 15px;">
+              <h4>Active Users (synced across all devices)</h4>
+              <div id="users-list" class="list" style="max-height: 250px; overflow-y: auto;"></div>
             </div>
           </div>
 

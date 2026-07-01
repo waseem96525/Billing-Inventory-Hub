@@ -300,6 +300,40 @@ export function updateUserCredentials(currentUsername, currentPassword, newUsern
   };
 }
 
+export function addUser(username, password, role) {
+  const trimmedUsername = String(username || '').trim();
+  const trimmedPassword = String(password || '').trim();
+
+  if (!trimmedUsername || !trimmedPassword) {
+    return { success: false, message: 'Username and password required.' };
+  }
+
+  if (authUsers.some((user) => user.username === trimmedUsername)) {
+    return { success: false, message: 'Username already exists.' };
+  }
+
+  const newUser = {
+    username: trimmedUsername,
+    password: trimmedPassword,
+    role: role || 'cashier',
+    displayName: trimmedUsername.charAt(0).toUpperCase() + trimmedUsername.slice(1)
+  };
+
+  authUsers.push(newUser);
+  persistAuthUsers(authUsers);
+  return { success: true, message: `User ${trimmedUsername} created successfully.` };
+}
+
+export function deleteUser(username) {
+  if (username === 'admin' || username === 'cashier') {
+    return { success: false, message: 'Cannot delete default users.' };
+  }
+
+  authUsers = authUsers.filter((user) => user.username !== username);
+  persistAuthUsers(authUsers);
+  return { success: true, message: `User ${username} deleted.` };
+}
+
 function getStoredAuth() {
   if (typeof window === 'undefined') return null;
   // try localStorage first for synchronous access
@@ -317,16 +351,28 @@ function getStoredAuth() {
   return null;
 }
 
-function persistAuth(user, password) {
+function persistAuth(user, password, rememberMe = false) {
   if (typeof window === 'undefined') return;
   if (user && password) {
     try {
-      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password }));
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password, rememberMe }));
     } catch (e) {}
-    dbSet(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password })).catch(() => {});
+    dbSet(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password, rememberMe })).catch(() => {});
   } else {
     try { window.localStorage.removeItem(AUTH_STORAGE_KEY); } catch (e) {}
     dbDelete(AUTH_STORAGE_KEY).catch(() => {});
+  }
+}
+
+function shouldAutoLogin() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed.rememberMe === true;
+  } catch (e) {
+    return false;
   }
 }
 
@@ -811,6 +857,35 @@ function renderAuth(state) {
   renderView(state);
 }
 
+function renderUsersList() {
+  const usersList = document.getElementById('users-list');
+  if (!usersList) return;
+
+  usersList.innerHTML = authUsers.map((user) => `
+    <div style="padding: 8px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <strong>${escapeHtml(user.username)}</strong>
+        <span style="margin-left: 10px; color: #666; font-size: 0.9em;">${escapeHtml(user.role)}</span>
+      </div>
+      ${user.username !== 'admin' && user.username !== 'cashier' ? `
+        <button class="delete-user-btn" data-username="${escapeHtml(user.username)}" style="padding: 5px 10px; background: #ff6b6b; color: white; border: none; border-radius: 3px; cursor: pointer;">Delete</button>
+      ` : ''}
+    </div>
+  `).join('');
+
+  // Add delete user event listeners
+  usersList.querySelectorAll('.delete-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const username = btn.getAttribute('data-username');
+      if (confirm(`Delete user "${username}"?`)) {
+        const result = deleteUser(username);
+        alert(result.message);
+        renderUsersList();
+      }
+    });
+  });
+}
+
 function renderView(state) {
   const allowedViews = getAllowedViews();
   if (!allowedViews.includes(currentView)) {
@@ -900,6 +975,7 @@ function bindEvents(state) {
     event.preventDefault();
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
+    const rememberMe = document.getElementById('login-remember').checked;
     const user = authenticateUser(username, password);
     const errorBox = document.getElementById('login-error');
     if (!user) {
@@ -908,7 +984,7 @@ function bindEvents(state) {
       return;
     }
     currentUser = user;
-    persistAuth(username, password);
+    persistAuth(username, password, rememberMe);
     errorBox.classList.add('hidden');
     document.getElementById('login-form').reset();
     renderAuth(state);
@@ -957,10 +1033,33 @@ function bindEvents(state) {
     renderAuth(state);
   });
 
+  // User management (admin only)
+  const userForm = document.getElementById('user-form');
+  if (userForm) {
+    userForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const username = document.getElementById('user-username').value.trim();
+      const password = document.getElementById('user-password').value.trim();
+      const role = document.getElementById('user-role').value;
+      
+      const result = addUser(username, password, role);
+      alert(result.message);
+      
+      if (result.success) {
+        document.getElementById('user-form').reset();
+        renderUsersList();
+      }
+    });
+  }
+
   document.querySelectorAll('.view-btn').forEach((button) => {
     button.addEventListener('click', () => {
       currentView = button.dataset.view;
       renderView(state);
+      // Re-render users list when switching to admin view
+      if (button.dataset.view === 'admin') {
+        renderUsersList();
+      }
     });
   });
 
@@ -1198,12 +1297,54 @@ function initializeApp() {
       if (firebaseUsers && firebaseUsers.length > 0) {
         authUsers = firebaseUsers;
         persistAuthUsers(authUsers);
+        renderUsersList();
       }
     }).catch((e) => console.warn('Failed to load auth users from Firebase', e));
   }
   
   const storedAuth = getStoredAuth();
-  currentUser = storedAuth ? authenticateUser(storedAuth.username, storedAuth.password) : null;
+  const shouldAutoLoginFlag = storedAuth && shouldAutoLogin();
+  
+  if (shouldAutoLoginFlag && storedAuth) {
+    // Auto-login if "Remember Me" was checked
+    currentUser = authenticateUser(storedAuth.username, storedAuth.password);
+    if (currentUser) {
+      firebaseInit();
+      if (firebaseEnabled) {
+        cloudLoadInitialState(currentUser.username).then((remoteState) => {
+          if (remoteState) {
+            state = {
+              ...state,
+              ...remoteState,
+              branches: remoteState.branches || state.branches,
+              inventory: remoteState.inventory || state.inventory,
+              transactions: remoteState.transactions || state.transactions,
+              shopProfile: remoteState.shopProfile || state.shopProfile
+            };
+            saveState(state);
+            renderView(state);
+          }
+        });
+        cloudSubscribe(currentUser.username, (remoteState) => {
+          try {
+            state = {
+              ...state,
+              ...remoteState,
+              branches: remoteState.branches || state.branches,
+              inventory: remoteState.inventory || state.inventory,
+              transactions: remoteState.transactions || state.transactions,
+              shopProfile: remoteState.shopProfile || state.shopProfile
+            };
+            saveState(state);
+            renderView(state);
+          } catch (e) { console.warn('Error applying remote state', e); }
+        });
+      }
+    }
+  } else {
+    currentUser = null;
+  }
+  
   renderAuth(state);
   bindEvents(state);
   document.getElementById('connectivity').textContent = navigator.onLine ? 'Realtime ready' : 'Offline mode';
