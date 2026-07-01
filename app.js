@@ -155,6 +155,29 @@ function cloudSaveState(state, username) {
   }
 }
 
+function cloudLoadInitialState(username) {
+  if (!firebaseEnabled || !username) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const ref = window.firebase.database().ref(`/users/${encodeURIComponent(username)}/state`);
+      ref.once('value', (snap) => {
+        if (snap.exists()) {
+          const val = snap.val();
+          resolve(val.state || val);
+        } else {
+          resolve(null);
+        }
+      }).catch((e) => {
+        console.warn('cloudLoadInitialState failed', e);
+        resolve(null);
+      });
+    } catch (e) {
+      console.warn('cloudLoadInitialState error', e);
+      resolve(null);
+    }
+  });
+}
+
 function cloudSubscribe(username, onUpdate) {
   if (!firebaseEnabled || !username) return;
   try {
@@ -836,7 +859,7 @@ function printReceipt(receipt, state) {
 }
 
 function bindEvents(state) {
-  document.getElementById('login-form').addEventListener('submit', (event) => {
+  document.getElementById('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
@@ -852,9 +875,26 @@ function bindEvents(state) {
     errorBox.classList.add('hidden');
     document.getElementById('login-form').reset();
     renderAuth(state);
-    // initialize firebase and subscribe to user's cloud state
+    // initialize firebase and load user's cloud state
     firebaseInit();
     if (firebaseEnabled) {
+      // Load initial state from Firebase on login (for new device scenario)
+      const remoteState = await cloudLoadInitialState(currentUser.username);
+      if (remoteState) {
+        try {
+          state = {
+            ...state,
+            ...remoteState,
+            branches: remoteState.branches || state.branches,
+            inventory: remoteState.inventory || state.inventory,
+            transactions: remoteState.transactions || state.transactions,
+            shopProfile: remoteState.shopProfile || state.shopProfile
+          };
+          saveState(state);
+          renderView(state);
+        } catch (e) { console.warn('Error applying initial remote state', e); }
+      }
+      // Subscribe to real-time updates after initial load
       cloudSubscribe(currentUser.username, (remoteState) => {
         try {
           // merge remote state, prefer remote values when available
