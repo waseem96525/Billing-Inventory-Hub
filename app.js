@@ -10,7 +10,7 @@ const DEFAULT_AUTH_USERS = [
 
 let currentView = 'admin';
 let currentUser = null;
-let authUsers = loadAuthUsers();
+let authUsers = [];  // Will be populated in initializeApp
 let cart = [];
 let lastReceipt = null;
 let heldBills = [];
@@ -205,6 +205,39 @@ function cloudUnsubscribe() {
   firebaseListener = null;
 }
 
+function cloudSaveAuthUsers(users) {
+  if (!firebaseEnabled) return;
+  try {
+    const ref = window.firebase.database().ref('/global/authUsers');
+    ref.set({ users, lastUpdated: Date.now() }).catch((e) => console.warn('cloudSaveAuthUsers failed', e));
+  } catch (e) {
+    console.warn('cloudSaveAuthUsers error', e);
+  }
+}
+
+function cloudLoadAuthUsers() {
+  if (!firebaseEnabled) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const ref = window.firebase.database().ref('/global/authUsers');
+      ref.once('value', (snap) => {
+        if (snap.exists()) {
+          const val = snap.val();
+          resolve(val.users || null);
+        } else {
+          resolve(null);
+        }
+      }).catch((e) => {
+        console.warn('cloudLoadAuthUsers failed', e);
+        resolve(null);
+      });
+    } catch (e) {
+      console.warn('cloudLoadAuthUsers error', e);
+      resolve(null);
+    }
+  });
+}
+
 function loadAuthUsers() {
   if (typeof window === 'undefined') return [...DEFAULT_AUTH_USERS];
   const raw = window.localStorage.getItem(AUTH_USERS_STORAGE_KEY);
@@ -223,6 +256,10 @@ function persistAuthUsers(users) {
     window.localStorage.setItem(AUTH_USERS_STORAGE_KEY, JSON.stringify(users));
   } catch (e) {}
   dbSet(AUTH_USERS_STORAGE_KEY, JSON.stringify(users)).catch(() => {});
+  // Also sync to Firebase if enabled
+  if (firebaseEnabled) {
+    cloudSaveAuthUsers(users);
+  }
 }
 
 export function authenticateUser(username, password) {
@@ -1146,10 +1183,25 @@ function bindEvents(state) {
 }
 
 function initializeApp() {
+  // Initialize Firebase first so we can load global auth users
+  firebaseInit();
+  
+  // Load auth users synchronously first, then try to sync from Firebase
   authUsers = loadAuthUsers();
   const initialState = loadState();
   let state = initialState;
   shopProfile = state.shopProfile || shopProfile;
+  
+  // Load auth users from Firebase if available (for cross-device sync)
+  if (firebaseEnabled) {
+    cloudLoadAuthUsers().then((firebaseUsers) => {
+      if (firebaseUsers && firebaseUsers.length > 0) {
+        authUsers = firebaseUsers;
+        persistAuthUsers(authUsers);
+      }
+    }).catch((e) => console.warn('Failed to load auth users from Firebase', e));
+  }
+  
   const storedAuth = getStoredAuth();
   currentUser = storedAuth ? authenticateUser(storedAuth.username, storedAuth.password) : null;
   renderAuth(state);
