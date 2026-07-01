@@ -120,6 +120,10 @@ async function dbDelete(key) {
 let firebaseEnabled = false;
 let firebaseDatabaseRef = null;
 let firebaseListener = null;
+let lastCloudSaveTime = 0;
+let isApplyingRemoteState = false;  // Flag to prevent recursive saves
+let cloudSaveTimeout = null;
+
 const firebaseConfig = {
   apiKey: "AIzaSyCBi6GCigBZx5yRTTTW8SXHzSkA1uTAvpM",
   authDomain: "billingsol-e9a83.firebaseapp.com",
@@ -145,10 +149,27 @@ function firebaseInit() {
 }
 
 function cloudSaveState(state, username) {
-  if (!firebaseEnabled || !username) return;
+  if (!firebaseEnabled || !username || isApplyingRemoteState) return;
+  
   try {
+    // Debounce: don't save more than once per 500ms
+    const now = Date.now();
+    if (now - lastCloudSaveTime < 500) {
+      // Clear existing timeout and set a new one
+      if (cloudSaveTimeout) clearTimeout(cloudSaveTimeout);
+      cloudSaveTimeout = setTimeout(() => {
+        cloudSaveState(state, username);
+      }, 500);
+      return;
+    }
+    
+    lastCloudSaveTime = now;
     const ref = window.firebase.database().ref(`/users/${encodeURIComponent(username)}/state`);
-    const payload = { state, lastUpdated: Date.now() };
+    const payload = { 
+      state, 
+      lastUpdated: Date.now(),
+      device: Math.random().toString(36).substr(2, 9)  // device ID to detect conflicts
+    };
     ref.set(payload).catch((e) => console.warn('cloudSaveState failed', e));
   } catch (e) {
     console.warn('cloudSaveState error', e);
@@ -187,7 +208,11 @@ function cloudSubscribe(username, onUpdate) {
       const val = snap.val();
       if (!val) return;
       try {
+        // Set flag to prevent recursive saves when applying remote state
+        isApplyingRemoteState = true;
         onUpdate(val.state || val);
+        // Reset flag after a tick
+        setTimeout(() => { isApplyingRemoteState = false; }, 100);
       } catch (e) { console.warn('cloud update handler failed', e); }
     });
   } catch (e) {
