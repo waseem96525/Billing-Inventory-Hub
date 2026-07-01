@@ -49,6 +49,139 @@ function escapeHtml(value = '') {
     .replace(/'/g, '&#39;');
 }
 
+function openDBAsync() {
+  if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const req = window.indexedDB.open('billing-hub-db', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbSet(key, value) {
+  if (typeof window === 'undefined' || !window.indexedDB) return;
+  try {
+    const db = await openDBAsync();
+    if (!db) return;
+    const tx = db.transaction('kv', 'readwrite');
+    const store = tx.objectStore('kv');
+    store.put(value, key);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  } catch (e) {
+    console.warn('IndexedDB set failed', e);
+  }
+}
+
+async function dbGet(key) {
+  if (typeof window === 'undefined' || !window.indexedDB) return null;
+  try {
+    const db = await openDBAsync();
+    if (!db) return null;
+    return await new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readonly');
+      const store = tx.objectStore('kv');
+      const req = store.get(key);
+      req.onsuccess = () => {
+        res(req.result);
+        db.close();
+      };
+      req.onerror = () => {
+        rej(req.error);
+        db.close();
+      };
+    });
+  } catch (e) {
+    console.warn('IndexedDB get failed', e);
+    return null;
+  }
+}
+
+async function dbDelete(key) {
+  if (typeof window === 'undefined' || !window.indexedDB) return;
+  try {
+    const db = await openDBAsync();
+    if (!db) return;
+    const tx = db.transaction('kv', 'readwrite');
+    const store = tx.objectStore('kv');
+    store.delete(key);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  } catch (e) {
+    console.warn('IndexedDB delete failed', e);
+  }
+}
+
+// Firebase Realtime Database sync (client-side). Guarded so tests/node don't execute.
+let firebaseEnabled = false;
+let firebaseDatabaseRef = null;
+let firebaseListener = null;
+const firebaseConfig = {
+  apiKey: "AIzaSyCBi6GCigBZx5yRTTTW8SXHzSkA1uTAvpM",
+  authDomain: "billingsol-e9a83.firebaseapp.com",
+  databaseURL: "https://billingsol-e9a83-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "billingsol-e9a83",
+  storageBucket: "billingsol-e9a83.firebasestorage.app",
+  messagingSenderId: "436716611232",
+  appId: "1:436716611232:web:e185ad817d4a67d0f94bc5",
+  measurementId: "G-7RG9H1C0BM"
+};
+
+function firebaseInit() {
+  if (typeof window === 'undefined' || typeof window.firebase === 'undefined') return;
+  try {
+    if (!window.firebase.apps || !window.firebase.apps.length) {
+      window.firebase.initializeApp(firebaseConfig);
+    }
+    firebaseEnabled = true;
+  } catch (e) {
+    console.warn('Firebase init failed', e);
+    firebaseEnabled = false;
+  }
+}
+
+function cloudSaveState(state, username) {
+  if (!firebaseEnabled || !username) return;
+  try {
+    const ref = window.firebase.database().ref(`/users/${encodeURIComponent(username)}/state`);
+    const payload = { state, lastUpdated: Date.now() };
+    ref.set(payload).catch((e) => console.warn('cloudSaveState failed', e));
+  } catch (e) {
+    console.warn('cloudSaveState error', e);
+  }
+}
+
+function cloudSubscribe(username, onUpdate) {
+  if (!firebaseEnabled || !username) return;
+  try {
+    const ref = window.firebase.database().ref(`/users/${encodeURIComponent(username)}/state`);
+    firebaseDatabaseRef = ref;
+    firebaseListener = ref.on('value', (snap) => {
+      const val = snap.val();
+      if (!val) return;
+      try {
+        onUpdate(val.state || val);
+      } catch (e) { console.warn('cloud update handler failed', e); }
+    });
+  } catch (e) {
+    console.warn('cloudSubscribe error', e);
+  }
+}
+
+function cloudUnsubscribe() {
+  try {
+    if (firebaseDatabaseRef && firebaseListener) {
+      firebaseDatabaseRef.off('value', firebaseListener);
+    }
+  } catch (e) { }
+  firebaseDatabaseRef = null;
+  firebaseListener = null;
+}
+
 function loadAuthUsers() {
   if (typeof window === 'undefined') return [...DEFAULT_AUTH_USERS];
   const raw = window.localStorage.getItem(AUTH_USERS_STORAGE_KEY);
@@ -63,7 +196,10 @@ function loadAuthUsers() {
 
 function persistAuthUsers(users) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(AUTH_USERS_STORAGE_KEY, JSON.stringify(users));
+  try {
+    window.localStorage.setItem(AUTH_USERS_STORAGE_KEY, JSON.stringify(users));
+  } catch (e) {}
+  dbSet(AUTH_USERS_STORAGE_KEY, JSON.stringify(users)).catch(() => {});
 }
 
 export function authenticateUser(username, password) {
@@ -106,22 +242,31 @@ export function updateUserCredentials(currentUsername, currentPassword, newUsern
 
 function getStoredAuth() {
   if (typeof window === 'undefined') return null;
-  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-  if (!raw) return null;
+  // try localStorage first for synchronous access
   try {
-    const parsed = JSON.parse(raw);
-    return authenticateUser(parsed.username, parsed.password) ? parsed : null;
-  } catch {
-    return null;
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return authenticateUser(parsed.username, parsed.password) ? parsed : null;
+    }
+  } catch (e) {
+    // continue to indexedDB fallback
   }
+  // As a fallback, attempt to read from IndexedDB (async but we return null here).
+  // The app will re-hydrate auth after DB load during initialization.
+  return null;
 }
 
 function persistAuth(user, password) {
   if (typeof window === 'undefined') return;
   if (user && password) {
-    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password }));
+    try {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password }));
+    } catch (e) {}
+    dbSet(AUTH_STORAGE_KEY, JSON.stringify({ username: user, password })).catch(() => {});
   } else {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    try { window.localStorage.removeItem(AUTH_STORAGE_KEY); } catch (e) {}
+    dbDelete(AUTH_STORAGE_KEY).catch(() => {});
   }
 }
 
@@ -240,7 +385,19 @@ export function loadState() {
 
 export function saveState(state) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    // ignore
+  }
+  // persist to IndexedDB asynchronously for more robust local storage
+  dbSet(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
+  // also try to persist to Firebase for cross-device sync when signed in
+  try {
+    if (typeof currentUser !== 'undefined' && currentUser && firebaseEnabled) {
+      cloudSaveState(state, currentUser.username);
+    }
+  } catch (e) {}
   if (typeof window.BroadcastChannel !== 'undefined') {
     const channel = new window.BroadcastChannel(REALTIME_CHANNEL);
     channel.postMessage({ type: 'state-update', state });
@@ -695,11 +852,31 @@ function bindEvents(state) {
     errorBox.classList.add('hidden');
     document.getElementById('login-form').reset();
     renderAuth(state);
+    // initialize firebase and subscribe to user's cloud state
+    firebaseInit();
+    if (firebaseEnabled) {
+      cloudSubscribe(currentUser.username, (remoteState) => {
+        try {
+          // merge remote state, prefer remote values when available
+          state = {
+            ...state,
+            ...remoteState,
+            branches: remoteState.branches || state.branches,
+            inventory: remoteState.inventory || state.inventory,
+            transactions: remoteState.transactions || state.transactions,
+            shopProfile: remoteState.shopProfile || state.shopProfile
+          };
+          saveState(state);
+          renderView(state);
+        } catch (e) { console.warn('Error applying remote state', e); }
+      });
+    }
   });
 
   document.getElementById('logout-btn').addEventListener('click', () => {
     currentUser = null;
     persistAuth(null, null);
+    cloudUnsubscribe();
     renderAuth(state);
   });
 
@@ -944,6 +1121,43 @@ function initializeApp() {
   window.addEventListener('offline', () => {
     document.getElementById('connectivity').textContent = 'Offline mode';
   });
+
+  // Hydrate from IndexedDB in the background so other devices with the same
+  // app instance can pick up the latest persisted state (local device only).
+  (async () => {
+    try {
+      const raw = await dbGet(STORAGE_KEY);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        state = {
+          ...state,
+          ...parsed,
+          branches: parsed.branches || state.branches,
+          inventory: parsed.inventory || state.inventory,
+          transactions: parsed.transactions || state.transactions,
+          shopProfile: parsed.shopProfile || state.shopProfile
+        };
+
+        const storedUsers = await dbGet(AUTH_USERS_STORAGE_KEY);
+        if (storedUsers) {
+          try { authUsers = typeof storedUsers === 'string' ? JSON.parse(storedUsers) : storedUsers; } catch { authUsers = storedUsers; }
+        }
+
+        const authFromDb = await dbGet(AUTH_STORAGE_KEY);
+        if (authFromDb && !currentUser) {
+          try {
+            const parsedAuth = typeof authFromDb === 'string' ? JSON.parse(authFromDb) : authFromDb;
+            currentUser = authenticateUser(parsedAuth.username, parsedAuth.password);
+          } catch {}
+        }
+
+        saveState(state);
+        renderAuth(state);
+      }
+    } catch (e) {
+      console.warn('Failed to hydrate from IndexedDB', e);
+    }
+  })();
 }
 
 if (typeof window !== 'undefined') {
