@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Billing & Inventory Hub</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section id="login-screen" class="login-screen" aria-labelledby="login-title">
+      <div class="login-card">
+        <div class="login-copy">
+          <p class="eyebrow">Secure access</p>
+          <h2 id="login-title">Welcome to Billing & Inventory Hub</h2>
+          <p class="hero-subtitle">Sign in as an administrator or cashier to manage sales, stock, and receipts.</p>
+        </div>
+        <form id="login-form" class="stack-form">
+          <input id="login-username" placeholder="Username" required />
+          <input id="login-password" type="password" placeholder="Password" required />
+          <button class="primary" type="submit">Sign in</button>
+          <p class="small">Demo accounts: admin / admin123, cashier / cashier123</p>
+          <p id="login-error" class="login-error hidden"></p>
+        </form>
+      </div>
+    </section>
+
+    <div id="app-shell" class="app-shell hidden">
+      <header class="topbar hero-panel">
+        <div class="hero-copy">
+          <p class="eyebrow">Multi-branch retail platform</p>
+          <h1>Billing & Inventory Hub</h1>
+          <p class="hero-subtitle">A polished, modern command center for admins and cashiers to manage stock, billing, and branch performance in real time.</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="connectivity" class="status-pill">Realtime ready</span>
+          <span id="auth-user-label" class="status-pill">Not signed in</span>
+          <button id="logout-btn" class="ghost-btn hidden">Logout</button>
+          <div class="view-switcher">
+            <button class="view-btn active" data-view="admin">Admin</button>
+            <button class="view-btn" data-view="cashier">Cashier</button>
+            <button class="view-btn" data-view="settings">Settings</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="insight-strip" aria-label="business snapshot">
+        <div class="stat-card">
+          <p class="stat-label">Branches</p>
+          <h3 id="branch-count">0</h3>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Tracked items</p>
+          <h3 id="inventory-count">0</h3>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Low stock alerts</p>
+          <h3 id="stock-alerts-count">0</h3>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Sales today</p>
+          <h3 id="revenue-count">₹0.00</h3>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Transactions</p>
+          <h3 id="transactions-count">0</h3>
+        </div>
+      </section>
+
+      <main class="content-grid">
+        <section id="settings-panel" class="panel hidden" aria-labelledby="settings-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Configuration</p>
+              <h2 id="settings-title">Shop Settings</h2>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Shop profile</h3>
+            <form id="settings-form" class="stack-form">
+              <div class="form-grid">
+                <input id="shop-name" placeholder="Shop name" required />
+                <input id="shop-owner" placeholder="Owner / Manager name" />
+                <input id="shop-phone" placeholder="Phone number" />
+                <input id="shop-email" placeholder="Email" />
+                <input id="shop-address" placeholder="Shop address" />
+                <input id="shop-gst" placeholder="GST / TAX number" />
+                <input id="shop-tax-name" placeholder="Tax label (e.g. GST)" />
+                <input id="shop-tax-rate" type="number" step="0.01" min="0" max="100" placeholder="Tax rate %" />
+                <input id="shop-receipt-prefix" placeholder="Receipt prefix (e.g. INV)" />
+                <input id="shop-next-receipt" type="number" min="1" placeholder="Next receipt number" />
+                <select id="shop-print-layout">
+                  <option value="standard">Standard</option>
+                  <option value="compact">Compact</option>
+                  <option value="detailed">Detailed</option>
+                </select>
+                <input id="shop-website" placeholder="Website" />
+                <input id="shop-footer" placeholder="Receipt footer message" />
+              </div>
+              <button class="primary" type="submit">Save settings</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h3>Current profile</h3>
+            <div id="settings-preview" class="receipt"></div>
+          </div>
+
+          <div class="card">
+            <h3>Change login credentials</h3>
+            <form id="account-form" class="stack-form">
+              <input id="account-current-password" type="password" placeholder="Current password" required />
+              <input id="account-new-username" placeholder="New username" required />
+              <input id="account-new-password" type="password" placeholder="New password" required />
+              <input id="account-confirm-password" type="password" placeholder="Confirm new password" required />
+              <button class="primary" type="submit">Update login</button>
+              <p id="account-feedback" class="account-feedback"></p>
+            </form>
+          </div>
+        </section>
+
+        <section id="admin-panel" class="panel" aria-labelledby="admin-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Management</p>
+              <h2 id="admin-title">Admin Console</h2>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Add branch</h3>
+            <form id="branch-form" class="stack-form">
+              <input id="branch-name" placeholder="Branch name" required />
+              <input id="branch-location" placeholder="Location" required />
+              <button class="primary" type="submit">Create branch</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h3>Add inventory item</h3>
+            <form id="inventory-form" class="stack-form">
+              <select id="inventory-branch" required></select>
+              <div class="form-grid">
+                <input id="inventory-sku" placeholder="SKU" required />
+                <input id="inventory-barcode" placeholder="Barcode" />
+                <input id="inventory-name" placeholder="Item name" required />
+                <input id="inventory-category" placeholder="Category" />
+                <input id="inventory-brand" placeholder="Brand" />
+                <input id="inventory-unit" placeholder="Unit (e.g. Pack, Kg)" />
+                <input id="inventory-cost" type="number" step="0.01" placeholder="Cost price" required />
+                <input id="inventory-mrp" type="number" step="0.01" placeholder="MRP" required />
+                <input id="inventory-price" type="number" step="0.01" placeholder="Selling price" required />
+                <input id="inventory-stock" type="number" min="0" placeholder="Stock" required />
+                <input id="inventory-threshold" type="number" min="0" placeholder="Low stock threshold" required />
+              </div>
+              <textarea id="inventory-description" rows="3" placeholder="Short description, warranty, or notes"></textarea>
+              <button class="primary" type="submit">Save item</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="panel-header compact">
+              <h3>Inventory overview</h3>
+              <span id="inventory-summary" class="muted"></span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Barcode</th>
+                    <th>Category</th>
+                    <th>Branch</th>
+                    <th>Stock</th>
+                    <th>MRP</th>
+                    <th>Selling</th>
+                  </tr>
+                </thead>
+                <tbody id="inventory-table"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Recent billing activity</h3>
+            <div id="transactions-list" class="list"></div>
+          </div>
+
+          <div class="card">
+            <div class="panel-header compact">
+              <h3>Sales & inventory reports</h3>
+              <span class="muted">Detailed overview</span>
+            </div>
+            <div id="reports-summary" class="report-grid"></div>
+            <div class="report-section">
+              <h4>Sales activity</h4>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Receipt</th>
+                      <th>Branch</th>
+                      <th>Date</th>
+                      <th>Items</th>
+                      <th>Amount</th>
+                      <th>Payment</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sales-report-list"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="report-section">
+              <h4>Inventory status</h4>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Stock</th>
+                      <th>Low stock</th>
+                      <th>Cost</th>
+                      <th>Selling</th>
+                      <th>Stock value</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="inventory-report-list"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="cashier-panel" class="panel hidden" aria-labelledby="cashier-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">POS</p>
+              <h2 id="cashier-title">Cashier Workspace</h2>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="row between">
+              <label>
+                <span>Branch</span>
+                <select id="cashier-branch"></select>
+              </label>
+              <div class="pill">Offline-safe mode</div>
+            </div>
+            <label class="search-box">
+              <span>Search item</span>
+              <input id="cashier-search" placeholder="Search by name or SKU" />
+            </label>
+            <div id="cashier-catalog" class="catalog-grid"></div>
+          </div>
+
+          <div class="card">
+            <div class="panel-header compact">
+              <h3>Cart</h3>
+              <span id="cart-total" class="muted"></span>
+            </div>
+            <div id="cart-list" class="list"></div>
+            <div class="billing-toolbar">
+              <label>
+                <span>Discount %</span>
+                <input id="discount-input" type="number" min="0" max="100" value="0" />
+              </label>
+              <label>
+                <span>Price override (₹)</span>
+                <input id="price-override-input" type="number" min="0" step="0.01" placeholder="Optional" />
+              </label>
+              <label>
+                <span>Payment</span>
+                <select id="payment-method">
+                  <option>Cash</option>
+                  <option>Card</option>
+                  <option>UPI</option>
+                  <option>Wallet</option>
+                </select>
+              </label>
+            </div>
+            <div class="action-row">
+              <button id="apply-override-btn">Apply Price</button>
+              <button id="hold-bill-btn">Hold Bill</button>
+              <button id="void-cart-btn">Void</button>
+              <button id="print-receipt-btn">Print</button>
+              <button id="reprint-receipt-btn">Reprint</button>
+              <button id="checkout-btn" class="primary">Checkout</button>
+            </div>
+            <div id="receipt-preview" class="receipt"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

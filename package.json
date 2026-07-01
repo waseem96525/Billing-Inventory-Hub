@@ -1,0 +1,9 @@
+{
+  "name": "billing-inventory-hub",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test app.test.mjs",
+    "dev": "python -m http.server 3000"
+  }
+}
