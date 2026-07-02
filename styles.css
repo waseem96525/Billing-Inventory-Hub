@@ -141,6 +141,17 @@ th { color: #6d7d9c; font-weight: 600; font-size: 0.84rem; text-transform: upper
 .muted { color: #6b7a92; font-size: 0.92rem; }
 .small { font-size: 0.84rem; color: #6b7a92; }
 .hidden { display: none !important; }
+.panel-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.panel-header div { width: 100%; }
+.panel-header.compact { display: flex; justify-content: space-between; align-items: center; }
+label { display: flex; flex-direction: column; gap: 6px; }
+label span { font-size: 0.9rem; font-weight: 500; color: #14213d; }
+.search-box { margin-bottom: 10px; }
+.search-box span { display: block; margin-bottom: 6px; }
+.search-box input { width: 100%; }
+.row label { flex-direction: row; align-items: center; gap: 8px; }
+.row label span { margin: 0; }
+.row label select { flex: 1; }
 .report-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -187,11 +198,114 @@ th { color: #6d7d9c; font-weight: 600; font-size: 0.84rem; text-transform: upper
   border: 1px solid rgba(255,255,255,0.22);
 }
 .view-btn.hidden, .view-btn[hidden] { display: none; }
-@media (max-width: 1100px) { .insight-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 980px) { .content-grid { grid-template-columns: 1fr; } .catalog-grid { grid-template-columns: 1fr; } .form-grid { grid-template-columns: 1fr; } }
-@media (max-width: 680px) {
-  .app-shell { padding: 14px; }
-  .hero-panel { padding: 18px; }
-  .topbar { flex-direction: column; align-items: flex-start; }
-  .insight-strip { grid-template-columns: 1fr; }
+/* Tablet and smaller desktops */
+@media (max-width: 1200px) {
+  .app-shell { max-width: 100%; }
+  .insight-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .report-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* Tablets */
+@media (max-width: 1024px) {
+  .app-shell { padding: 16px; }
+  .content-grid { grid-template-columns: 1fr; }
+  .insight-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .form-grid { grid-template-columns: 1fr; }
+  .hero-panel { padding: 18px 20px; }
+  .hero-copy h1 { font-size: clamp(1.4rem, 4vw, 2rem); }
+  .topbar { flex-wrap: wrap; gap: 12px; }
+  .topbar-actions { gap: 8px; }
+  .view-switcher { flex-wrap: wrap; }
+  .table-wrap { font-size: 0.9rem; }
+  th, td { padding: 8px; }
+}
+
+/* Small tablets and large phones */
+@media (max-width: 768px) {
+  .app-shell { padding: 12px; }
+  .hero-panel { padding: 16px 18px; border-radius: 18px; }
+  .hero-copy h1 { font-size: clamp(1.2rem, 5vw, 1.8rem); margin: 2px 0 6px; }
+  .hero-subtitle { font-size: 0.9rem; max-width: 100%; }
+  .insight-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0 16px; }
+  .stat-card { padding: 12px 14px; border-radius: 14px; }
+  .stat-card h3 { font-size: 1.1rem; }
+  .card { padding: 14px; border-radius: 18px; margin-bottom: 12px; }
+  .card h3 { font-size: 1.05rem; }
+  .topbar { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .topbar-actions { width: 100%; flex-wrap: wrap; gap: 8px; }
+  .view-switcher { width: 100%; }
+  .view-btn { font-size: 0.9rem; padding: 8px 10px; }
+  .table-wrap { font-size: 0.85rem; }
+  th, td { padding: 6px 8px; }
+  .catalog-grid { grid-template-columns: 1fr; }
+  .billing-toolbar { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; gap: 8px; }
+  input, select, textarea { padding: 9px 11px; font-size: 16px; border-radius: 10px; }
+  button { padding: 9px 12px; font-size: 0.95rem; }
+  .login-card { width: 100%; padding: 20px; border-radius: 20px; }
+  .login-card h2 { font-size: 1.3rem; }
+  .panel-header { flex-direction: column; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+
+/* Phones */
+@media (max-width: 480px) {
+  .app-shell { padding: 10px; }
+  .hero-panel { padding: 12px 14px; border-radius: 16px; }
+  .hero-copy h1 { font-size: clamp(1.1rem, 6vw, 1.5rem); margin: 1px 0 4px; }
+  .hero-subtitle { font-size: 0.85rem; line-height: 1.4; }
+  .eyebrow { font-size: 0.65rem; margin: 0 0 2px; }
+  .topbar-actions { width: 100%; gap: 6px; }
+  .view-switcher { width: 100%; gap: 6px; }
+  .view-btn { font-size: 0.85rem; padding: 6px 8px; flex: 1; }
+  .status-pill, .pill { font-size: 0.85rem; padding: 6px 10px; }
+  .insight-strip { grid-template-columns: 1fr; gap: 8px; margin: 10px 0 12px; }
+  .stat-card { padding: 10px 12px; border-radius: 12px; }
+  .stat-label { font-size: 0.75rem; margin-bottom: 4px; }
+  .stat-card h3 { font-size: 1rem; }
+  .card { padding: 12px; border-radius: 14px; margin-bottom: 10px; }
+  .card h3 { font-size: 0.95rem; }
+  .panel-header { margin-bottom: 10px; }
+  .panel-header div { width: 100%; }
+  .panel-header.compact { flex-direction: row; justify-content: space-between; }
+  .form-grid { gap: 6px; }
+  input, select, textarea { padding: 8px 10px; font-size: 16px; border-radius: 8px; }
+  button { padding: 8px 10px; font-size: 0.9rem; border-radius: 8px; }
+  button.primary { padding: 10px; }
+  .stack-form { gap: 8px; margin-top: 8px; }
+  .table-wrap { font-size: 0.8rem; }
+  th, td { padding: 5px 6px; }
+  th { font-size: 0.75rem; }
+  .catalog-grid { gap: 8px; margin-top: 8px; }
+  .catalog-item { padding: 10px; }
+  .list { gap: 8px; margin-top: 8px; }
+  .list-item { padding: 10px 12px; border-radius: 10px; }
+  .login-screen { padding: 12px; }
+  .login-card { padding: 16px; border-radius: 16px; box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08); }
+  .login-card h2 { font-size: 1.2rem; margin-bottom: 6px; }
+  .login-copy { margin-bottom: 12px; }
+  .action-row { gap: 6px; margin-top: 10px; }
+  .action-row button { padding: 8px 10px; font-size: 0.85rem; }
+  .report-grid { grid-template-columns: 1fr; gap: 8px; margin-top: 8px; }
+  .report-card { padding: 10px; border-radius: 12px; }
+  .report-card h3 { font-size: 0.95rem; margin-top: 4px; }
+  .muted { font-size: 0.8rem; }
+  .small { font-size: 0.75rem; }
+  label { font-size: 0.9rem; gap: 6px; }
+  .row { gap: 8px; }
+  .receipt { padding: 10px; margin-top: 10px; }
+}
+
+/* Very small phones (< 360px) */
+@media (max-width: 360px) {
+  .hero-copy h1 { font-size: 1rem; }
+  .hero-subtitle { font-size: 0.8rem; }
+  .topbar-actions { flex-direction: column; width: 100%; }
+  .view-switcher { flex-direction: column; }
+  .view-btn { font-size: 0.8rem; }
+  .insight-strip { gap: 6px; }
+  button { padding: 7px 8px; font-size: 0.85rem; }
+  input, select { font-size: 15px; }
 }
