@@ -46,6 +46,8 @@
             <button class="view-btn" data-view="customers">Customers</button>
             <button class="view-btn" data-view="returns">Returns</button>
             <button class="view-btn" data-view="analytics">Analytics</button>
+            <button class="view-btn" data-view="employees">Employees</button>
+            <button class="view-btn" data-view="audit">Audit</button>
             <button class="view-btn" data-view="settings">Settings</button>
           </div>
         </div>
@@ -98,7 +100,16 @@
                 <input id="shop-address" placeholder="Shop address" />
                 <input id="shop-gst" placeholder="GST / TAX number" />
                 <input id="shop-tax-name" placeholder="Tax label (e.g. GST)" />
-                <input id="shop-tax-rate" type="number" step="0.01" min="0" max="100" placeholder="Tax rate %" />
+                <input id="shop-tax-rate" type="number" step="0.01" min="0" max="100" placeholder="Default tax rate %" />
+                <select id="shop-tax-type">
+                  <option value="gst">GST (CGST + SGST split)</option>
+                  <option value="vat">VAT / Single Rate</option>
+                  <option value="none">No Tax</option>
+                </select>
+                <select id="shop-tax-inclusive">
+                  <option value="exclusive">Tax Exclusive (added on top)</option>
+                  <option value="inclusive">Tax Inclusive (price includes tax)</option>
+                </select>
                 <input id="shop-receipt-prefix" placeholder="Receipt prefix (e.g. INV)" />
                 <input id="shop-next-receipt" type="number" min="1" placeholder="Next receipt number" />
                 <select id="shop-print-layout">
@@ -134,6 +145,56 @@
             <h3>📦 Low Stock Thresholds</h3>
             <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Set minimum stock levels for each item. You'll receive alerts when stock falls below the threshold.</p>
             <div id="thresholds-container" class="thresholds-grid"></div>
+          </div>
+
+          <!-- Backup & Export Card -->
+          <div class="card">
+            <h3>💾 Backup & Data Export</h3>
+            <p style="color:#666;font-size:14px;margin-bottom:18px;">Export your data for safekeeping or migrate to another device. Last backup: <strong id="last-backup-label">Never</strong></p>
+
+            <div class="backup-sections">
+              <!-- Full Backup -->
+              <div class="backup-section">
+                <h4>🗂️ Full Backup (JSON)</h4>
+                <p class="backup-desc">Downloads everything — inventory, transactions, customers, employees, returns, settings, and audit log.</p>
+                <div class="backup-actions">
+                  <button id="export-full-backup-btn" class="primary">⬇ Download Backup</button>
+                  <label class="import-label" title="Restore from a backup file">
+                    ⬆ Restore Backup
+                    <input type="file" id="import-backup-file" accept=".json" style="display:none" />
+                  </label>
+                </div>
+                <p id="backup-restore-status" class="backup-status"></p>
+              </div>
+
+              <!-- CSV Exports -->
+              <div class="backup-section">
+                <h4>📊 Export as CSV</h4>
+                <p class="backup-desc">Export individual datasets as spreadsheet-ready CSV files.</p>
+                <div class="csv-export-grid">
+                  <button id="export-transactions-csv" class="csv-btn">🧾 Transactions</button>
+                  <button id="export-inventory-csv" class="csv-btn">📦 Inventory</button>
+                  <button id="export-customers-csv" class="csv-btn">👥 Customers</button>
+                  <button id="export-employees-csv" class="csv-btn">🏷️ Employees</button>
+                  <button id="export-returns-csv" class="csv-btn">↩️ Returns</button>
+                  <button id="export-tax-report-csv" class="csv-btn">🧮 Tax Report</button>
+                </div>
+              </div>
+
+              <!-- CSV Import Inventory -->
+              <div class="backup-section">
+                <h4>📥 Import Inventory from CSV</h4>
+                <p class="backup-desc">Bulk-add inventory items from a CSV. Required columns: <code>name, sku, sellingPrice, stock</code>. Optional: <code>barcode, category, brand, unit, costPrice, mrp, lowStock, hsnCode, taxRate</code></p>
+                <div class="backup-actions">
+                  <label class="import-label">
+                    📂 Choose CSV File
+                    <input type="file" id="import-inventory-csv" accept=".csv" style="display:none" />
+                  </label>
+                  <a id="csv-template-link" href="#" class="csv-template-btn">⬇ Download Template</a>
+                </div>
+                <p id="import-inventory-status" class="backup-status"></p>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -189,6 +250,20 @@
                 <input id="inventory-price" type="number" step="0.01" placeholder="Selling price" required />
                 <input id="inventory-stock" type="number" min="0" placeholder="Stock" required />
                 <input id="inventory-threshold" type="number" min="0" placeholder="Low stock threshold" required />
+                <input id="inventory-hsn" placeholder="HSN Code (for GST)" />
+                <select id="inventory-tax-rate">
+                  <option value="0">Tax: 0% (Exempt)</option>
+                  <option value="5">Tax: 5%</option>
+                  <option value="12">Tax: 12%</option>
+                  <option value="18" selected>Tax: 18%</option>
+                  <option value="28">Tax: 28%</option>
+                  <option value="custom">Custom rate</option>
+                </select>
+                <input id="inventory-tax-rate-custom" type="number" step="0.01" min="0" max="100" placeholder="Custom tax %" class="hidden" />
+                <select id="inventory-tax-inclusive">
+                  <option value="exclusive">Price is tax-exclusive</option>
+                  <option value="inclusive">Price is tax-inclusive</option>
+                </select>
               </div>
               <textarea id="inventory-description" rows="3" placeholder="Short description, warranty, or notes"></textarea>
               <button class="primary" type="submit">Save item</button>
@@ -211,6 +286,7 @@
                     <th>Stock</th>
                     <th>MRP</th>
                     <th>Selling</th>
+                    <th>Tax</th>
                   </tr>
                 </thead>
                 <tbody id="inventory-table"></tbody>
@@ -285,6 +361,30 @@
               </label>
               <div class="pill">Offline-safe mode</div>
             </div>
+
+            <!-- Barcode Scanner Row -->
+            <div class="barcode-scanner-row">
+              <div class="barcode-input-wrap">
+                <span class="barcode-icon">📷</span>
+                <input id="barcode-scan-input" placeholder="Scan barcode or type & press Enter" autocomplete="off" />
+                <div id="barcode-feedback" class="barcode-feedback hidden"></div>
+              </div>
+              <button id="camera-scan-btn" class="camera-btn" title="Scan with camera">📸 Camera</button>
+            </div>
+
+            <!-- Camera scan overlay -->
+            <div id="camera-scan-overlay" class="camera-overlay hidden">
+              <div class="camera-overlay-inner">
+                <div class="camera-header">
+                  <strong>Camera Barcode Scanner</strong>
+                  <button id="close-camera-btn" class="ghost-btn">✕ Close</button>
+                </div>
+                <video id="barcode-video" autoplay playsinline></video>
+                <canvas id="barcode-canvas" style="display:none"></canvas>
+                <p id="camera-status" class="camera-status">Initializing camera...</p>
+              </div>
+            </div>
+
             <label class="search-box">
               <span>Search item</span>
               <input id="cashier-search" placeholder="Search by name or SKU" />
@@ -311,15 +411,50 @@
                 <span>Price override (₹)</span>
                 <input id="price-override-input" type="number" min="0" step="0.01" placeholder="Optional" />
               </label>
-              <label>
-                <span>Payment</span>
+            </div>
+            <!-- Split Payment Panel -->
+            <div class="split-payment-panel">
+              <div class="split-payment-header">
+                <span>💳 Payment</span>
+                <label class="split-toggle-label">
+                  <input type="checkbox" id="split-payment-toggle" />
+                  Split payment
+                </label>
+              </div>
+              <!-- Single payment (default) -->
+              <div id="single-payment-row">
                 <select id="payment-method">
                   <option>Cash</option>
                   <option>Card</option>
                   <option>UPI</option>
                   <option>Wallet</option>
                 </select>
-              </label>
+              </div>
+              <!-- Split payment rows -->
+              <div id="split-payment-rows" class="hidden">
+                <div class="split-row" id="split-row-1">
+                  <select class="split-method">
+                    <option>Cash</option>
+                    <option>Card</option>
+                    <option>UPI</option>
+                    <option>Wallet</option>
+                  </select>
+                  <input type="number" class="split-amount" placeholder="Amount (₹)" min="0" step="0.01" />
+                  <button class="split-remove-btn" style="display:none">✕</button>
+                </div>
+                <div class="split-row" id="split-row-2">
+                  <select class="split-method">
+                    <option>Cash</option>
+                    <option selected>Card</option>
+                    <option>UPI</option>
+                    <option>Wallet</option>
+                  </select>
+                  <input type="number" class="split-amount" placeholder="Remaining" min="0" step="0.01" />
+                  <button class="split-remove-btn" style="display:none">✕</button>
+                </div>
+              </div>
+              <div id="split-summary" class="split-summary hidden"></div>
+              <button id="add-split-row-btn" class="hidden">+ Add Method</button>
             </div>
             <div class="action-row">
               <button id="apply-override-btn">Apply Price</button>
@@ -530,6 +665,143 @@
           <div class="returns-history-card">
             <h3>📋 Return History</h3>
             <div id="returns-history-list"></div>
+          </div>
+        </section>
+
+        <section id="employees-panel" class="panel hidden" aria-labelledby="employees-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Workforce</p>
+              <h2 id="employees-title">Employee Management</h2>
+            </div>
+            <button id="add-employee-btn" class="primary">👤 Add Employee</button>
+          </div>
+
+          <!-- Employee stats strip -->
+          <div class="emp-stats-strip" id="emp-stats-strip"></div>
+
+          <!-- Add/Edit Employee Modal -->
+          <div id="emp-form-card" class="emp-form-card hidden">
+            <h3 id="emp-form-title">Add New Employee</h3>
+            <div class="emp-form-grid">
+              <div class="emp-form-field">
+                <label>Full Name *</label>
+                <input id="emp-fullname" placeholder="e.g. Ravi Kumar" />
+              </div>
+              <div class="emp-form-field">
+                <label>Username (login) *</label>
+                <input id="emp-username" placeholder="e.g. ravi123" />
+              </div>
+              <div class="emp-form-field">
+                <label>Password *</label>
+                <input id="emp-password" type="password" placeholder="Password" />
+              </div>
+              <div class="emp-form-field">
+                <label>Role</label>
+                <select id="emp-role">
+                  <option value="cashier">Cashier</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div class="emp-form-field">
+                <label>Phone</label>
+                <input id="emp-phone" type="tel" placeholder="+91 98765 43210" />
+              </div>
+              <div class="emp-form-field">
+                <label>Email</label>
+                <input id="emp-email" type="email" placeholder="employee@shop.com" />
+              </div>
+              <div class="emp-form-field">
+                <label>Position / Title</label>
+                <input id="emp-position" placeholder="e.g. Senior Cashier" />
+              </div>
+              <div class="emp-form-field">
+                <label>Branch</label>
+                <select id="emp-branch"></select>
+              </div>
+              <div class="emp-form-field">
+                <label>Joining Date</label>
+                <input id="emp-joining" type="date" />
+              </div>
+              <div class="emp-form-field">
+                <label>Status</label>
+                <select id="emp-status">
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                  <option value="on_leave">On Leave</option>
+                </select>
+              </div>
+              <div class="emp-form-field" style="grid-column: 1/-1">
+                <label>Notes</label>
+                <input id="emp-notes" placeholder="Any notes..." />
+              </div>
+            </div>
+            <div class="emp-form-actions">
+              <button id="emp-save-btn" class="primary">✓ Save Employee</button>
+              <button id="emp-cancel-btn" class="ghost-btn">Cancel</button>
+              <span id="emp-form-error" class="emp-error"></span>
+            </div>
+          </div>
+
+          <!-- Employee list -->
+          <div id="emp-list-view">
+            <div class="emp-search-row">
+              <input id="emp-search" placeholder="Search by name, username, or branch..." />
+              <select id="emp-status-filter">
+                <option value="all">All Status</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+                <option value="on_leave">On Leave</option>
+              </select>
+            </div>
+            <div id="emp-cards-grid" class="emp-cards-grid"></div>
+          </div>
+
+          <!-- Employee Detail View -->
+          <div id="emp-detail-view" class="hidden">
+            <button id="emp-back-btn" class="ghost-btn">← Back to Employees</button>
+            <div id="emp-detail-content"></div>
+          </div>
+        </section>
+
+        <section id="audit-panel" class="panel hidden" aria-labelledby="audit-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Compliance & Security</p>
+              <h2 id="audit-title">Audit Trail</h2>
+            </div>
+            <button id="export-audit-btn" class="ghost-btn">↓ Export CSV</button>
+          </div>
+
+          <div class="audit-controls">
+            <input id="audit-search" type="text" placeholder="Search user, action, details..." class="audit-search-input" />
+            <select id="audit-category-filter" class="audit-filter-select">
+              <option value="all">All Categories</option>
+              <option value="auth">🔑 Auth</option>
+              <option value="sale">💰 Sales</option>
+              <option value="return">↩️ Returns</option>
+              <option value="inventory">📦 Inventory</option>
+              <option value="settings">⚙️ Settings</option>
+              <option value="user">👤 Users</option>
+              <option value="cart">🛒 Cart</option>
+            </select>
+            <input id="audit-date-filter" type="date" class="audit-filter-select" title="Filter by date" />
+            <span id="audit-count" class="audit-count-badge">0 entries</span>
+          </div>
+
+          <div class="audit-table-wrap">
+            <table class="audit-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>User</th>
+                  <th>Action</th>
+                  <th>Details</th>
+                  <th>Category</th>
+                </tr>
+              </thead>
+              <tbody id="audit-log-table-body"></tbody>
+            </table>
           </div>
         </section>
 

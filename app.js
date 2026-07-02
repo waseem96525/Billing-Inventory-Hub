@@ -22,6 +22,248 @@ let customers = []; // Customer profiles with loyalty points
 let selectedCustomerForDetail = null; // Track customer detail view
 let returns = []; // Return/refund records
 let pendingReturnTransaction = null; // Transaction selected for return
+let auditLog = []; // Audit trail records
+
+// ─── Audit Trail Core ─────────────────────────────────────────────────────────
+const AUDIT_STORAGE_KEY = 'billing-inventory-hub-audit';
+const AUDIT_CATEGORIES = { AUTH: 'auth', SALE: 'sale', RETURN: 'return', INVENTORY: 'inventory', SETTINGS: 'settings', USER: 'user', CART: 'cart' };
+
+function logAudit(action, category, details, metadata = {}) {
+  const entry = {
+    id: `aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    user: currentUser?.username || 'system',
+    role: currentUser?.role || 'unknown',
+    action,
+    category,
+    details,
+    metadata
+  };
+  auditLog.unshift(entry);
+  // Keep last 1000 entries to avoid bloat
+  if (auditLog.length > 1000) auditLog = auditLog.slice(0, 1000);
+  try { window.localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditLog)); } catch (e) {}
+  return entry;
+}
+
+function loadAuditLog() {
+  try {
+    const raw = window.localStorage.getItem(AUDIT_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+// ─── End Audit Core ───────────────────────────────────────────────────────────
+
+// ─── Employee Management ──────────────────────────────────────────────────────
+const EMPLOYEES_STORAGE_KEY = 'billing-inventory-hub-employees';
+let employees = []; // Employee profile data (linked to authUsers by username)
+let selectedEmployeeId = null; // For detail view
+
+function loadEmployees() {
+  try {
+    const raw = window.localStorage.getItem(EMPLOYEES_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveEmployees() {
+  try { window.localStorage.setItem(EMPLOYEES_STORAGE_KEY, JSON.stringify(employees)); } catch (e) {}
+}
+
+function getEmployeePerformance(username, state) {
+  const userTransactions = (state.transactions || []).filter(t => t.cashierName === username);
+  const totalSales = userTransactions.reduce((s, t) => s + t.total, 0);
+  const txnCount = userTransactions.length;
+  const avgBill = txnCount > 0 ? totalSales / txnCount : 0;
+  const lastActive = userTransactions.length > 0 ? userTransactions[0].timestamp : null;
+  return { totalSales, txnCount, avgBill, lastActive };
+}
+
+function renderEmployees(state) {
+  const listView = document.getElementById('emp-list-view');
+  const detailView = document.getElementById('emp-detail-view');
+  const cardsGrid = document.getElementById('emp-cards-grid');
+  const statsStrip = document.getElementById('emp-stats-strip');
+  if (!cardsGrid) return;
+
+  if (selectedEmployeeId) {
+    listView.classList.add('hidden');
+    detailView.classList.remove('hidden');
+    renderEmployeeDetail(selectedEmployeeId, state);
+    return;
+  }
+  listView.classList.remove('hidden');
+  detailView.classList.add('hidden');
+
+  // Stats strip
+  const active = employees.filter(e => e.status === 'active').length;
+  const inactive = employees.filter(e => e.status !== 'active').length;
+  const totalEmployees = employees.length;
+  if (statsStrip) {
+    statsStrip.innerHTML = `
+      <div class="emp-stat"><span class="emp-stat-val">${totalEmployees}</span><span class="emp-stat-label">Total</span></div>
+      <div class="emp-stat"><span class="emp-stat-val emp-active">${active}</span><span class="emp-stat-label">Active</span></div>
+      <div class="emp-stat"><span class="emp-stat-val emp-inactive">${inactive}</span><span class="emp-stat-label">Inactive/Leave</span></div>
+    `;
+  }
+
+  const search = (document.getElementById('emp-search')?.value || '').toLowerCase();
+  const statusFilter = document.getElementById('emp-status-filter')?.value || 'all';
+
+  let filtered = employees;
+  if (search) filtered = filtered.filter(e =>
+    e.fullName.toLowerCase().includes(search) ||
+    e.username.toLowerCase().includes(search) ||
+    (e.position || '').toLowerCase().includes(search)
+  );
+  if (statusFilter !== 'all') filtered = filtered.filter(e => e.status === statusFilter);
+
+  if (!filtered.length) {
+    cardsGrid.innerHTML = `<div class="emp-empty">${employees.length === 0 ? '👥 No employees yet. Click "Add Employee" to get started.' : 'No employees match your search.'}</div>`;
+    return;
+  }
+
+  // Fill branch select in emp form
+  const empBranchSelect = document.getElementById('emp-branch');
+  if (empBranchSelect && empBranchSelect.options.length === 0) {
+    state.branches.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.id; opt.textContent = b.name;
+      empBranchSelect.appendChild(opt);
+    });
+  }
+
+  const statusConfig = {
+    active: { label: 'Active', cls: 'emp-badge-active' },
+    inactive: { label: 'Inactive', cls: 'emp-badge-inactive' },
+    on_leave: { label: 'On Leave', cls: 'emp-badge-leave' }
+  };
+
+  cardsGrid.innerHTML = filtered.map(emp => {
+    const perf = getEmployeePerformance(emp.username, state);
+    const branch = state.branches.find(b => b.id === emp.branchId);
+    const cfg = statusConfig[emp.status] || statusConfig.active;
+    const initials = emp.fullName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+    return `
+      <div class="emp-card" data-emp-id="${emp.id}">
+        <div class="emp-card-header">
+          <div class="emp-avatar">${initials}</div>
+          <div class="emp-card-info">
+            <strong>${escapeHtml(emp.fullName)}</strong>
+            <div class="emp-username">@${escapeHtml(emp.username)}</div>
+          </div>
+          <span class="emp-badge ${cfg.cls}">${cfg.label}</span>
+        </div>
+        <div class="emp-card-meta">
+          <span>${escapeHtml(emp.role)}</span>
+          ${emp.position ? `<span>• ${escapeHtml(emp.position)}</span>` : ''}
+          ${branch ? `<span>• ${escapeHtml(branch.name)}</span>` : ''}
+        </div>
+        <div class="emp-perf-row">
+          <div class="emp-perf-stat"><span class="emp-perf-val">${perf.txnCount}</span><span>Sales</span></div>
+          <div class="emp-perf-stat"><span class="emp-perf-val">${formatCurrency(perf.totalSales)}</span><span>Revenue</span></div>
+          <div class="emp-perf-stat"><span class="emp-perf-val">${formatCurrency(perf.avgBill)}</span><span>Avg Bill</span></div>
+        </div>
+        ${emp.phone ? `<div class="emp-contact">📱 ${escapeHtml(emp.phone)}</div>` : ''}
+        <div class="emp-card-actions">
+          <button class="emp-view-btn" data-emp-id="${emp.id}">View Profile</button>
+          <button class="emp-edit-btn" data-emp-id="${emp.id}">Edit</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderEmployeeDetail(empId, state) {
+  const emp = employees.find(e => e.id === empId);
+  const container = document.getElementById('emp-detail-content');
+  if (!emp || !container) return;
+
+  const perf = getEmployeePerformance(emp.username, state);
+  const branch = state.branches.find(b => b.id === emp.branchId);
+  const statusConfig = { active: { label: 'Active', cls: 'emp-badge-active' }, inactive: { label: 'Inactive', cls: 'emp-badge-inactive' }, on_leave: { label: 'On Leave', cls: 'emp-badge-leave' } };
+  const cfg = statusConfig[emp.status] || statusConfig.active;
+  const initials = emp.fullName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+
+  // Get recent transactions for this employee
+  const empTxns = (state.transactions || []).filter(t => t.cashierName === emp.username).slice(0, 10);
+
+  container.innerHTML = `
+    <div class="emp-detail-card">
+      <div class="emp-detail-header">
+        <div class="emp-avatar-lg">${initials}</div>
+        <div class="emp-detail-info">
+          <h3>${escapeHtml(emp.fullName)}</h3>
+          <div class="emp-detail-sub">@${escapeHtml(emp.username)} · ${escapeHtml(emp.role)}</div>
+          ${emp.position ? `<div class="emp-detail-sub">${escapeHtml(emp.position)}</div>` : ''}
+          <span class="emp-badge ${cfg.cls}" style="margin-top:8px">${cfg.label}</span>
+        </div>
+        <button class="emp-edit-detail-btn emp-edit-btn" data-emp-id="${emp.id}" style="align-self:flex-start">✏️ Edit</button>
+      </div>
+
+      <div class="emp-detail-meta-grid">
+        ${emp.phone ? `<div><strong>📱 Phone</strong><span>${escapeHtml(emp.phone)}</span></div>` : ''}
+        ${emp.email ? `<div><strong>✉️ Email</strong><span>${escapeHtml(emp.email)}</span></div>` : ''}
+        ${branch ? `<div><strong>🏬 Branch</strong><span>${escapeHtml(branch.name)}</span></div>` : ''}
+        ${emp.joiningDate ? `<div><strong>📅 Joined</strong><span>${escapeHtml(emp.joiningDate)}</span></div>` : ''}
+        ${emp.notes ? `<div style="grid-column:1/-1"><strong>📝 Notes</strong><span>${escapeHtml(emp.notes)}</span></div>` : ''}
+      </div>
+
+      <div class="emp-perf-banner">
+        <div class="emp-perf-stat-lg"><span class="emp-perf-val-lg">${perf.txnCount}</span><span>Total Transactions</span></div>
+        <div class="emp-perf-stat-lg"><span class="emp-perf-val-lg">${formatCurrency(perf.totalSales)}</span><span>Total Revenue</span></div>
+        <div class="emp-perf-stat-lg"><span class="emp-perf-val-lg">${formatCurrency(perf.avgBill)}</span><span>Avg Bill Value</span></div>
+        <div class="emp-perf-stat-lg"><span class="emp-perf-val-lg">${perf.lastActive ? new Date(perf.lastActive).toLocaleDateString() : '—'}</span><span>Last Active</span></div>
+      </div>
+
+      <div class="emp-txn-section">
+        <h4>Recent Transactions</h4>
+        ${empTxns.length === 0
+          ? '<p class="muted" style="padding:12px 0">No transactions recorded for this employee yet.</p>'
+          : `<table class="emp-txn-table">
+              <thead><tr><th>Bill #</th><th>Date</th><th>Items</th><th>Total</th><th>Payment</th></tr></thead>
+              <tbody>${empTxns.map(t => `
+                <tr>
+                  <td>${escapeHtml(t.billNumber || t.id)}</td>
+                  <td>${escapeHtml(t.timestamp)}</td>
+                  <td>${t.items.map(i => `${i.name}×${i.qty}`).join(', ')}</td>
+                  <td>${formatCurrency(t.total)}</td>
+                  <td>${escapeHtml(t.paymentMethod)}</td>
+                </tr>`).join('')}</tbody>
+             </table>`}
+      </div>
+
+      <div class="emp-danger-zone">
+        <h4>⚠️ Danger Zone</h4>
+        <button class="emp-delete-btn" data-emp-id="${emp.id}" data-username="${escapeHtml(emp.username)}">🗑️ Remove Employee</button>
+      </div>
+    </div>
+  `;
+}
+
+function openEmpForm(emp = null) {
+  const card = document.getElementById('emp-form-card');
+  document.getElementById('emp-form-title').textContent = emp ? 'Edit Employee' : 'Add New Employee';
+  document.getElementById('emp-fullname').value = emp?.fullName || '';
+  document.getElementById('emp-username').value = emp?.username || '';
+  document.getElementById('emp-password').value = '';
+  document.getElementById('emp-password').placeholder = emp ? 'Leave blank to keep current' : 'Password';
+  document.getElementById('emp-role').value = emp?.role || 'cashier';
+  document.getElementById('emp-phone').value = emp?.phone || '';
+  document.getElementById('emp-email').value = emp?.email || '';
+  document.getElementById('emp-position').value = emp?.position || '';
+  document.getElementById('emp-joining').value = emp?.joiningDate || '';
+  document.getElementById('emp-status').value = emp?.status || 'active';
+  document.getElementById('emp-notes').value = emp?.notes || '';
+  document.getElementById('emp-form-error').textContent = '';
+  card.dataset.editId = emp?.id || '';
+  card.classList.remove('hidden');
+  document.getElementById('emp-fullname').focus();
+}
+
+// ─── End Employee Management ──────────────────────────────────────────────────
+
 let shopProfile = {
   shopName: 'Billing & Inventory Hub',
   ownerName: '',
@@ -487,9 +729,10 @@ export function buildReceiptHtml(receipt = {}, branchName = 'Store') {
   const profile = receipt.shopProfile || shopProfile || {};
   const items = (receipt.items || []).map((entry) => `
     <tr>
-      <td>${escapeHtml(entry.name)}</td>
+      <td>${escapeHtml(entry.name)}${entry.hsnCode ? `<br><small style="color:#888">HSN: ${escapeHtml(entry.hsnCode)}</small>` : ''}</td>
       <td>${entry.qty}</td>
       <td>${formatCurrency(entry.price || 0)}</td>
+      ${entry.itemTaxRate !== undefined ? `<td>${entry.itemTaxRate}%</td>` : '<td>-</td>'}
     </tr>`).join('');
 
   const subtotal = Number(receipt.subtotal || 0);
@@ -498,9 +741,23 @@ export function buildReceiptHtml(receipt = {}, branchName = 'Store') {
   const taxRate = Number(receipt.taxRate || profile.taxRate || 0);
   const taxAmount = Number(receipt.taxAmount || (taxRate > 0 ? subtotal * (taxRate / 100) : 0));
   const taxLabel = receipt.taxLabel || profile.taxName || 'Tax';
+  const taxType = receipt.taxType || profile.taxType || 'gst';
   const billNumber = receipt.billNumber || receipt.id || 'POS';
   const layout = receipt.layout || profile.printLayout || 'standard';
   const total = Number(receipt.total || subtotal - discountAmount + taxAmount);
+
+  // Build tax breakdown for receipt
+  let taxLinesHTML = '';
+  if (receipt.taxSlabs && receipt.taxSlabs.length > 0 && taxType === 'gst') {
+    taxLinesHTML = receipt.taxSlabs
+      .filter(s => s.tax > 0)
+      .map(s => `
+        <div><span>CGST @ ${s.rate/2}%</span><strong>${formatCurrency(s.tax/2)}</strong></div>
+        <div><span>SGST @ ${s.rate/2}%</span><strong>${formatCurrency(s.tax/2)}</strong></div>
+      `).join('');
+  } else if (taxAmount > 0) {
+    taxLinesHTML = `<div><span>${escapeHtml(taxLabel)} (${taxRate}%)</span><strong>${formatCurrency(taxAmount)}</strong></div>`;
+  }
 
   return `<!DOCTYPE html>
   <html lang="en">
@@ -530,15 +787,18 @@ export function buildReceiptHtml(receipt = {}, branchName = 'Store') {
       <div class="meta">Invoice: ${escapeHtml(receipt.id || 'POS')}</div>
       <div class="meta">Date: ${escapeHtml(receipt.timestamp || new Date().toLocaleString())}</div>
       <div class="meta">Payment: ${escapeHtml(receipt.paymentMethod || 'Cash')}</div>
+      ${receipt.splitPayments && receipt.splitPayments.length > 1
+        ? receipt.splitPayments.map(p => `<div class="meta">&nbsp;&nbsp;↳ ${escapeHtml(p.method)}: ${formatCurrency(p.amount)}</div>`).join('')
+        : ''}
       <table>
-        <thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead>
+        <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Tax%</th></tr></thead>
         <tbody>${items}</tbody>
       </table>
       <div class="totals">
         <div><span>Subtotal</span><strong>${formatCurrency(subtotal)}</strong></div>
-        <div><span>Discount (${discountPercent}%)</span><strong>${formatCurrency(discountAmount)}</strong></div>
-        ${taxAmount > 0 ? `<div><span>Tax (${escapeHtml(taxLabel)})</span><strong>${formatCurrency(taxAmount)}</strong></div>` : ''}
-        <div><span>Total</span><strong>${formatCurrency(total)}</strong></div>
+        <div><span>Discount (${discountPercent}%)</span><strong>-${formatCurrency(discountAmount)}</strong></div>
+        ${taxLinesHTML}
+        <div style="border-top:2px solid #000;margin-top:4px;padding-top:4px"><span><strong>Total</strong></span><strong>${formatCurrency(total)}</strong></div>
       </div>
       <div class="meta" style="margin-top:16px">${escapeHtml(profile.footer || 'Thank you for shopping with us!')}</div>
     </body>
@@ -643,7 +903,10 @@ export function addInventoryItem(state, payload) {
     sellingPrice: Number(payload.sellingPrice),
     description: payload.description,
     stock: Number(payload.stock),
-    lowStock: Number(payload.lowStock)
+    lowStock: Number(payload.lowStock),
+    hsnCode: payload.hsnCode || '',
+    itemTaxRate: payload.itemTaxRate !== undefined ? Number(payload.itemTaxRate) : undefined,
+    taxInclusive: payload.taxInclusive || 'exclusive'
   };
   return { ...state, inventory: [...state.inventory, item] };
 }
@@ -694,7 +957,7 @@ export function transferHeldBill(billId, toCashier) {
   return true;
 }
 
-export function checkoutCart(state, branchId, paymentMethod, cashierName = 'Cashier', discountPercent = 0) {
+export function checkoutCart(state, branchId, paymentMethod, cashierName = 'Cashier', discountPercent = 0, splitPayments = null) {
   const selectedItems = cart.filter((entry) => entry.branchId === branchId);
   if (!selectedItems.length) {
     return { success: false, message: 'Cart is empty.' };
@@ -711,13 +974,60 @@ export function checkoutCart(state, branchId, paymentMethod, cashierName = 'Cash
 
   const subtotal = selectedItems.reduce((sum, entry) => sum + entry.qty * entry.price, 0);
   const discountAmount = subtotal * (discountPercent / 100);
+  const discountedSubtotal = subtotal - discountAmount;
   const profile = state.shopProfile || {};
-  const taxRate = Number(profile.taxRate || 0);
-  const taxAmount = subtotal * (taxRate / 100);
-  const finalTotal = subtotal - discountAmount + taxAmount;
+  const globalTaxRate = Number(profile.taxRate || 0);
+  const taxType = profile.taxType || 'gst'; // 'gst', 'vat', 'none'
+  const taxInclusive = profile.taxInclusive || 'exclusive';
+
+  // Per-item tax calculation (use item taxRate if set, else global)
+  let taxSlabs = {}; // { '18': { taxable: 0, taxAmount: 0 }, ... }
+  let totalTaxAmount = 0;
+
+  selectedItems.forEach(entry => {
+    const invItem = state.inventory.find(i => i.id === entry.id);
+    const itemTaxRate = invItem?.itemTaxRate !== undefined ? Number(invItem.itemTaxRate) : globalTaxRate;
+    const itemInclusive = invItem?.taxInclusive || taxInclusive;
+    const lineTotal = entry.qty * entry.price * (1 - discountPercent / 100);
+
+    let taxableAmount, taxAmt;
+    if (itemInclusive === 'inclusive' && itemTaxRate > 0) {
+      // Back-calculate: taxable = price / (1 + rate/100)
+      taxableAmount = lineTotal / (1 + itemTaxRate / 100);
+      taxAmt = lineTotal - taxableAmount;
+    } else {
+      taxableAmount = lineTotal;
+      taxAmt = lineTotal * (itemTaxRate / 100);
+    }
+
+    totalTaxAmount += taxAmt;
+    const slabKey = String(itemTaxRate);
+    if (!taxSlabs[slabKey]) taxSlabs[slabKey] = { rate: itemTaxRate, taxable: 0, tax: 0 };
+    taxSlabs[slabKey].taxable += taxableAmount;
+    taxSlabs[slabKey].tax += taxAmt;
+  });
+
+  // For inclusive pricing, subtotal is already tax-included, so adjust
+  const finalTotal = taxInclusive === 'inclusive'
+    ? discountedSubtotal  // total is already final
+    : discountedSubtotal + totalTaxAmount;
+
   const receiptPrefix = String(profile.receiptPrefix || 'INV').trim() || 'INV';
   const nextReceiptNumber = Number(profile.nextReceiptNumber || 1001);
   const billNumber = `${receiptPrefix}${receiptPrefix.endsWith('-') ? '' : '-'}${nextReceiptNumber}`;
+
+  // Validate split payments if provided
+  if (splitPayments && splitPayments.length > 0) {
+    const splitTotal = splitPayments.reduce((s, p) => s + p.amount, 0);
+    if (Math.abs(splitTotal - finalTotal) > 0.01) {
+      return { success: false, message: `Split payment total (${formatCurrency(splitTotal)}) must equal bill total (${formatCurrency(finalTotal)}).` };
+    }
+  }
+
+  // Build payment label for display
+  const effectivePaymentMethod = splitPayments && splitPayments.length > 1
+    ? splitPayments.map(p => p.method).join(' + ')
+    : paymentMethod;
 
   const transaction = {
     id: `txn-${Date.now()}`,
@@ -726,13 +1036,25 @@ export function checkoutCart(state, branchId, paymentMethod, cashierName = 'Cash
     subtotal,
     discountPercent,
     discountAmount,
-    taxRate,
-    taxAmount,
+    taxRate: globalTaxRate,
+    taxAmount: totalTaxAmount,
+    taxSlabs: Object.values(taxSlabs),
+    taxType,
     total: finalTotal,
     billNumber,
-    paymentMethod,
+    paymentMethod: effectivePaymentMethod,
+    splitPayments: splitPayments && splitPayments.length > 1 ? splitPayments : null,
     cashierName,
-    items: selectedItems.map((entry) => ({ name: entry.name, qty: entry.qty }))
+    items: selectedItems.map((entry) => {
+      const invItem = state.inventory.find(i => i.id === entry.id);
+      return {
+        name: entry.name,
+        qty: entry.qty,
+        price: entry.price,
+        hsnCode: invItem?.hsnCode || '',
+        itemTaxRate: invItem?.itemTaxRate !== undefined ? Number(invItem.itemTaxRate) : globalTaxRate
+      };
+    })
   };
 
   const nextProfile = {
@@ -851,6 +1173,7 @@ function renderAdmin(state) {
           <td>${item.stock}</td>
           <td>${formatCurrency(item.mrp ?? item.sellingPrice)}</td>
           <td>${formatCurrency(item.sellingPrice)}</td>
+          <td>${item.itemTaxRate !== undefined ? item.itemTaxRate + '%' : (state.shopProfile?.taxRate || 0) + '%'}</td>
         </tr>`;
     })
     .join('');
@@ -931,15 +1254,21 @@ function renderCashier(state, branchId) {
     return haystack.includes(searchValue);
   });
 
-  catalog.innerHTML = items.map((item) => `
-    <div class="catalog-item">
+  catalog.innerHTML = items.map((item) => {
+    const isLow = item.stock <= item.lowStock;
+    const profile = state.shopProfile || {};
+    const itemTax = item.itemTaxRate !== undefined ? item.itemTaxRate : (profile.taxRate || 0);
+    return `
+    <div class="catalog-item${isLow ? ' catalog-item-low' : ''}">
       <strong>${item.name}</strong>
       <div class="small">${item.sku}</div>
       <div class="small">${item.category || 'General'} • ${item.brand || 'Brand'}</div>
-      <div class="small">Stock ${item.stock}</div>
-      <div>${formatCurrency(item.sellingPrice)}</div>
+      ${item.barcode ? `<div class="catalog-barcode" title="Barcode: ${escapeHtml(item.barcode)}">⬛ ${escapeHtml(item.barcode)}</div>` : ''}
+      <div class="small${isLow ? ' stock-low-text' : ''}">Stock ${item.stock}${isLow ? ' ⚠️' : ''}</div>
+      <div>${formatCurrency(item.sellingPrice)} ${itemTax > 0 ? `<span class="catalog-tax">GST ${itemTax}%</span>` : ''}</div>
       <button class="primary" data-add-item="${item.id}">Add to cart</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   if (!cart.length) {
     cartList.innerHTML = '<div class="small">Cart is empty.</div>';
@@ -963,8 +1292,56 @@ function renderCashier(state, branchId) {
 
   const subtotal = getCartTotal();
   const discountAmount = subtotal * (activeDiscount / 100);
-  const finalTotal = subtotal - discountAmount;
-  cartTotal.textContent = `Subtotal: ${formatCurrency(subtotal)} • Discount: ${activeDiscount}% • Final: ${formatCurrency(finalTotal)}`;
+  const discountedSubtotal = subtotal - discountAmount;
+  const profile = state.shopProfile || {};
+  const globalTaxRate = Number(profile.taxRate || 0);
+  const taxType = profile.taxType || 'gst';
+  const taxInclusive = profile.taxInclusive || 'exclusive';
+  const taxName = profile.taxName || 'GST';
+
+  // Compute live tax from cart
+  let liveTaxAmount = 0;
+  let liveTaxSlabs = {};
+  cart.forEach(entry => {
+    const invItem = state.inventory.find(i => i.id === entry.id);
+    const itemTaxRate = invItem?.itemTaxRate !== undefined ? Number(invItem.itemTaxRate) : globalTaxRate;
+    const lineTotal = entry.qty * entry.price * (1 - activeDiscount / 100);
+    const taxAmt = taxInclusive === 'inclusive' && itemTaxRate > 0
+      ? lineTotal - (lineTotal / (1 + itemTaxRate / 100))
+      : lineTotal * (itemTaxRate / 100);
+    liveTaxAmount += taxAmt;
+    const key = String(itemTaxRate);
+    if (!liveTaxSlabs[key]) liveTaxSlabs[key] = { rate: itemTaxRate, tax: 0 };
+    liveTaxSlabs[key].tax += taxAmt;
+  });
+
+  const finalTotal = taxInclusive === 'inclusive' ? discountedSubtotal : discountedSubtotal + liveTaxAmount;
+
+  // Build tax breakdown string
+  let taxBreakdown = '';
+  if (liveTaxAmount > 0) {
+    const slabs = Object.values(liveTaxSlabs).filter(s => s.tax > 0);
+    if (taxType === 'gst') {
+      taxBreakdown = slabs.map(s => `CGST ${s.rate/2}%: ${formatCurrency(s.tax/2)} + SGST ${s.rate/2}%: ${formatCurrency(s.tax/2)}`).join(' | ');
+    } else {
+      taxBreakdown = slabs.map(s => `${taxName} ${s.rate}%: ${formatCurrency(s.tax)}`).join(' | ');
+    }
+  }
+
+  cartTotal.textContent = liveTaxAmount > 0
+    ? `Subtotal: ${formatCurrency(subtotal)} • Discount: ${activeDiscount}% • Tax: ${formatCurrency(liveTaxAmount)} • Final: ${formatCurrency(finalTotal)}`
+    : `Subtotal: ${formatCurrency(subtotal)} • Discount: ${activeDiscount}% • Final: ${formatCurrency(finalTotal)}`;
+
+  // Show tax breakdown below the total
+  let taxBreakdownEl = document.getElementById('cart-tax-breakdown');
+  if (!taxBreakdownEl) {
+    taxBreakdownEl = document.createElement('div');
+    taxBreakdownEl.id = 'cart-tax-breakdown';
+    taxBreakdownEl.className = 'cart-tax-breakdown';
+    cartTotal.parentNode.insertBefore(taxBreakdownEl, cartTotal.nextSibling);
+  }
+  taxBreakdownEl.textContent = taxBreakdown;
+  taxBreakdownEl.style.display = taxBreakdown ? '' : 'none';
 
   if (lastReceipt) {
     receiptPreview.innerHTML = `
@@ -979,7 +1356,7 @@ function renderCashier(state, branchId) {
 }
 
 function getAllowedViews() {
-  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'queue', 'customers', 'returns', 'analytics', 'settings'];
+  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'queue', 'customers', 'returns', 'analytics', 'employees', 'audit', 'settings'];
   if (currentUser?.role === 'cashier') return ['cashier', 'queue', 'customers', 'returns'];
   return [];
 }
@@ -1049,6 +1426,8 @@ function renderView(state) {
   document.getElementById('customers-panel').classList.toggle('hidden', currentView !== 'customers');
   document.getElementById('returns-panel').classList.toggle('hidden', currentView !== 'returns');
   document.getElementById('analytics-panel').classList.toggle('hidden', currentView !== 'analytics');
+  document.getElementById('employees-panel').classList.toggle('hidden', currentView !== 'employees');
+  document.getElementById('audit-panel').classList.toggle('hidden', currentView !== 'audit');
   document.getElementById('settings-panel').classList.toggle('hidden', currentView !== 'settings');
   document.querySelectorAll('.view-btn').forEach((button) => {
     const allowed = allowedViews.includes(button.dataset.view);
@@ -1061,6 +1440,8 @@ function renderView(state) {
   renderCustomers(state);
   renderReturns(state);
   renderAnalytics(state);
+  renderEmployees(state);
+  renderAuditLog();
   renderSettings(state);
 }
 
@@ -1542,6 +1923,304 @@ function renderCustomers(state) {
   }
 }
 
+// Audit Trail Render
+function renderAuditLog() {
+  const container = document.getElementById('audit-log-table-body');
+  const countEl = document.getElementById('audit-count');
+  if (!container) return;
+
+  const categoryFilter = document.getElementById('audit-category-filter')?.value || 'all';
+  const searchFilter = (document.getElementById('audit-search')?.value || '').toLowerCase().trim();
+  const dateFilter = document.getElementById('audit-date-filter')?.value || '';
+
+  let filtered = auditLog;
+  if (categoryFilter !== 'all') filtered = filtered.filter(e => e.category === categoryFilter);
+  if (searchFilter) filtered = filtered.filter(e =>
+    e.details.toLowerCase().includes(searchFilter) ||
+    e.user.toLowerCase().includes(searchFilter) ||
+    e.action.toLowerCase().includes(searchFilter)
+  );
+  if (dateFilter) {
+    filtered = filtered.filter(e => {
+      const entryDate = new Date(e.timestamp).toISOString().slice(0, 10);
+      return entryDate === dateFilter;
+    });
+  }
+
+  if (countEl) countEl.textContent = `${filtered.length} of ${auditLog.length} entries`;
+
+  if (!filtered.length) {
+    container.innerHTML = `<tr><td colspan="5" class="audit-empty">No audit entries match the current filter.</td></tr>`;
+    return;
+  }
+
+  const categoryIcons = {
+    auth: '🔑', sale: '💰', return: '↩️', inventory: '📦',
+    settings: '⚙️', user: '👤', cart: '🛒'
+  };
+  const actionColors = {
+    LOGIN: 'audit-tag-auth', LOGOUT: 'audit-tag-auth',
+    SALE: 'audit-tag-sale', RETURN: 'audit-tag-return',
+    VOID: 'audit-tag-cart', HOLD: 'audit-tag-cart', PRICE_OVERRIDE: 'audit-tag-cart',
+    INVENTORY_ADD: 'audit-tag-inventory', INVENTORY_EDIT: 'audit-tag-inventory',
+    THRESHOLD_CHANGE: 'audit-tag-inventory',
+    SETTINGS_CHANGE: 'audit-tag-settings', PASSWORD_CHANGE: 'audit-tag-settings',
+    USER_ADD: 'audit-tag-user', USER_REMOVE: 'audit-tag-user', POINTS_UPDATE: 'audit-tag-user'
+  };
+
+  container.innerHTML = filtered.map(entry => {
+    const time = new Date(entry.timestamp).toLocaleString();
+    const icon = categoryIcons[entry.category] || '📋';
+    const tagClass = actionColors[entry.action] || 'audit-tag-default';
+    return `
+      <tr class="audit-row">
+        <td class="audit-time">${escapeHtml(time)}</td>
+        <td><span class="audit-user-badge">${escapeHtml(entry.user)}</span> <span class="audit-role">${escapeHtml(entry.role)}</span></td>
+        <td><span class="audit-tag ${tagClass}">${icon} ${escapeHtml(entry.action)}</span></td>
+        <td class="audit-details">${escapeHtml(entry.details)}</td>
+        <td class="audit-category">${escapeHtml(entry.category)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function exportAuditCSV() {
+  const headers = ['Timestamp', 'User', 'Role', 'Action', 'Category', 'Details'];
+  const rows = auditLog.map(e => [
+    new Date(e.timestamp).toLocaleString(),
+    e.user, e.role, e.action, e.category,
+    e.details.replace(/,/g, ';')
+  ]);
+  downloadCSV('audit-log', headers, rows);
+}
+
+// ─── Backup & Export Functions ────────────────────────────────────────────────
+
+const BACKUP_TIMESTAMP_KEY = 'billing-inventory-hub-last-backup';
+
+function downloadCSV(filename, headers, rows) {
+  const csv = [headers, ...rows].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv, { type: 'text/csv;charset=utf-8;' }]);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${filename}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadJSON(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${filename}-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportFullBackup(state) {
+  const backup = {
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    exportedBy: currentUser?.username || 'unknown',
+    state,
+    customers,
+    returns,
+    employees,
+    auditLog: auditLog.slice(0, 500) // cap to 500 for size
+  };
+  downloadJSON('billing-hub-backup', backup);
+  try { window.localStorage.setItem(BACKUP_TIMESTAMP_KEY, new Date().toLocaleString()); } catch (e) {}
+  updateLastBackupLabel();
+  logAudit('BACKUP_EXPORT', AUDIT_CATEGORIES.SETTINGS, `Full backup exported by ${currentUser?.username}`);
+}
+
+function importFromBackup(file, onComplete) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const backup = JSON.parse(e.target.result);
+      if (!backup.state || !backup.version) {
+        onComplete(false, 'Invalid backup file. Missing required fields.');
+        return;
+      }
+      // Restore all data
+      saveState(backup.state);
+      if (backup.customers) { customers = backup.customers; saveCustomers(); }
+      if (backup.returns) { returns = backup.returns; saveReturns(); }
+      if (backup.employees) { employees = backup.employees; saveEmployees(); }
+      if (backup.auditLog) {
+        auditLog = backup.auditLog;
+        try { window.localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditLog)); } catch (_) {}
+      }
+      logAudit('BACKUP_IMPORT', AUDIT_CATEGORIES.SETTINGS, `Backup restored from file (exported: ${backup.exportedAt || 'unknown'})`);
+      onComplete(true, `✓ Backup restored from ${backup.exportedAt ? new Date(backup.exportedAt).toLocaleString() : 'file'}. Please reload.`);
+    } catch (err) {
+      onComplete(false, `Failed to parse backup: ${err.message}`);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function exportTransactionsCSV(state) {
+  const headers = ['Bill #', 'Date', 'Branch', 'Cashier', 'Items', 'Subtotal', 'Discount', 'Tax', 'Total', 'Payment'];
+  const rows = state.transactions.map(t => {
+    const branch = state.branches.find(b => b.id === t.branchId);
+    return [
+      t.billNumber || t.id,
+      t.timestamp,
+      branch?.name || t.branchId,
+      t.cashierName || 'Cashier',
+      t.items.map(i => `${i.name}x${i.qty}`).join('; '),
+      t.subtotal,
+      t.discountAmount || 0,
+      t.taxAmount || 0,
+      t.total,
+      t.paymentMethod
+    ];
+  });
+  downloadCSV('transactions', headers, rows);
+}
+
+function exportInventoryCSV(state) {
+  const headers = ['SKU', 'Barcode', 'Name', 'Category', 'Brand', 'Unit', 'Cost Price', 'MRP', 'Selling Price', 'Stock', 'Low Stock', 'HSN Code', 'Tax Rate', 'Branch'];
+  const rows = state.inventory.map(item => {
+    const branch = state.branches.find(b => b.id === item.branchId);
+    return [
+      item.sku, item.barcode || '', item.name, item.category || '', item.brand || '',
+      item.unit || '', item.costPrice, item.mrp, item.sellingPrice,
+      item.stock, item.lowStock, item.hsnCode || '',
+      item.itemTaxRate !== undefined ? item.itemTaxRate : '',
+      branch?.name || ''
+    ];
+  });
+  downloadCSV('inventory', headers, rows);
+}
+
+function exportCustomersCSV() {
+  const headers = ['Phone', 'Name', 'Transactions', 'Total Spent', 'Loyalty Points', 'Created'];
+  const rows = customers.map(c => [
+    c.phone, c.name, c.transactionCount, c.totalSpent, c.loyaltyPoints, c.createdAt || ''
+  ]);
+  downloadCSV('customers', headers, rows);
+}
+
+function exportEmployeesCSV() {
+  const headers = ['Username', 'Full Name', 'Role', 'Position', 'Phone', 'Email', 'Status', 'Joining Date', 'Notes'];
+  const rows = employees.map(e => [
+    e.username, e.fullName, e.role, e.position || '', e.phone || '', e.email || '', e.status, e.joiningDate || '', e.notes || ''
+  ]);
+  downloadCSV('employees', headers, rows);
+}
+
+function exportReturnsCSV() {
+  const headers = ['Return ID', 'Original Bill', 'Date', 'Items', 'Refund Amount', 'Reason', 'Refund Type', 'Notes'];
+  const rows = returns.map(r => [
+    r.id, r.originalBillNumber, r.date,
+    r.items.map(i => `${i.name}x${i.qty}`).join('; '),
+    r.refundAmount, r.reason, r.refundType, r.notes || ''
+  ]);
+  downloadCSV('returns', headers, rows);
+}
+
+function exportTaxReportCSV(state) {
+  const headers = ['Bill #', 'Date', 'Subtotal', 'Discount', 'Tax Type', 'Tax Rate', 'CGST', 'SGST', 'Total Tax', 'Grand Total'];
+  const profile = state.shopProfile || {};
+  const taxType = profile.taxType || 'gst';
+
+  const rows = state.transactions.map(t => {
+    const taxAmt = t.taxAmount || 0;
+    const isGST = taxType === 'gst' || t.taxType === 'gst';
+    return [
+      t.billNumber || t.id,
+      t.timestamp,
+      t.subtotal,
+      t.discountAmount || 0,
+      isGST ? 'GST' : (profile.taxName || 'Tax'),
+      t.taxRate || 0,
+      isGST ? (taxAmt / 2).toFixed(2) : '',
+      isGST ? (taxAmt / 2).toFixed(2) : '',
+      taxAmt,
+      t.total
+    ];
+  });
+  downloadCSV('tax-report', headers, rows);
+}
+
+function generateInventoryCSVTemplate() {
+  const headers = ['name', 'sku', 'sellingPrice', 'stock', 'barcode', 'category', 'brand', 'unit', 'costPrice', 'mrp', 'lowStock', 'hsnCode', 'taxRate', 'description'];
+  const example = ['Milk 500ml', 'SKU100', '45', '100', '8901234567100', 'Dairy', 'FreshMart', 'Pack', '35', '50', '10', '0402', '5', 'Fresh milk'];
+  downloadCSV('inventory-template', headers, [example]);
+}
+
+function importInventoryFromCSV(file, state, onComplete) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const lines = e.target.result.split('\n').filter(l => l.trim());
+      if (lines.length < 2) { onComplete(false, 'CSV must have a header row and at least one data row.'); return; }
+
+      const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+      const required = ['name', 'sku', 'sellingprice', 'stock'];
+      const missing = required.filter(r => !headers.includes(r));
+      if (missing.length > 0) { onComplete(false, `Missing required columns: ${missing.join(', ')}`); return; }
+
+      let added = 0, skipped = 0;
+      const defaultBranchId = state.branches[0]?.id || 'branch-1';
+
+      lines.slice(1).forEach(line => {
+        if (!line.trim()) return;
+        const values = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+        const row = {};
+        headers.forEach((h, i) => { row[h] = values[i] || ''; });
+
+        if (!row.name || !row.sku) { skipped++; return; }
+        // Skip duplicates by SKU
+        if (state.inventory.some(i => i.sku === row.sku)) { skipped++; return; }
+
+        state = addInventoryItem(state, {
+          branchId: defaultBranchId,
+          sku: row.sku,
+          barcode: row.barcode || '',
+          name: row.name,
+          category: row.category || '',
+          brand: row.brand || '',
+          unit: row.unit || '',
+          costPrice: Number(row.costprice || row['cost price'] || 0),
+          mrp: Number(row.mrp || row.sellingprice || 0),
+          sellingPrice: Number(row.sellingprice || 0),
+          stock: Number(row.stock || 0),
+          lowStock: Number(row.lowstock || row['low stock'] || 0),
+          hsnCode: row.hsncode || row.hsn || '',
+          itemTaxRate: row.taxrate !== '' ? Number(row.taxrate) : undefined,
+          description: row.description || ''
+        });
+        added++;
+      });
+
+      saveState(state);
+      logAudit('INVENTORY_IMPORT', AUDIT_CATEGORIES.INVENTORY, `CSV import: ${added} items added, ${skipped} skipped`);
+      onComplete(true, `✓ Imported ${added} items. ${skipped} skipped (duplicates or missing data). Reload to see all items.`, state);
+    } catch (err) {
+      onComplete(false, `CSV parse error: ${err.message}`);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function updateLastBackupLabel() {
+  const el = document.getElementById('last-backup-label');
+  if (!el) return;
+  try {
+    const ts = window.localStorage.getItem(BACKUP_TIMESTAMP_KEY);
+    el.textContent = ts || 'Never';
+    el.style.color = ts ? '#16a34a' : '#dc2626';
+  } catch (_) {}
+}
+
+// ─── End Backup & Export ──────────────────────────────────────────────────────
+
 function renderSettings(state) {
   const preview = document.getElementById('settings-preview');
   const profile = state.shopProfile || shopProfile;
@@ -1575,9 +2254,16 @@ function renderSettings(state) {
   document.getElementById('shop-print-layout').value = profile.printLayout || 'standard';
   document.getElementById('shop-website').value = profile.website || '';
   document.getElementById('shop-footer').value = profile.footer || '';
+  const taxTypeEl = document.getElementById('shop-tax-type');
+  if (taxTypeEl) taxTypeEl.value = profile.taxType || 'gst';
+  const taxInclusiveEl = document.getElementById('shop-tax-inclusive');
+  if (taxInclusiveEl) taxInclusiveEl.value = profile.taxInclusive || 'exclusive';
   
   // Render thresholds
   renderThresholds(state);
+  
+  // Update last backup label
+  updateLastBackupLabel();
 }
 
 function renderThresholds(state) {
@@ -1788,6 +2474,7 @@ function bindEvents(state) {
     }
     currentUser = user;
     persistAuth(username, password, rememberMe);
+    logAudit('LOGIN', AUDIT_CATEGORIES.AUTH, `User "${username}" logged in as ${user.role}`);
     errorBox.classList.add('hidden');
     document.getElementById('login-form').reset();
     renderAuth(state);
@@ -1830,6 +2517,7 @@ function bindEvents(state) {
   });
 
   document.getElementById('logout-btn').addEventListener('click', () => {
+    logAudit('LOGOUT', AUDIT_CATEGORIES.AUTH, `User "${currentUser?.username}" logged out`);
     currentUser = null;
     persistAuth(null, null);
     cloudUnsubscribe();
@@ -1849,6 +2537,7 @@ function bindEvents(state) {
       alert(result.message);
       
       if (result.success) {
+        logAudit('USER_ADD', AUDIT_CATEGORIES.USER, `Added new user "${username}" with role "${role}"`, { username, role });
         document.getElementById('user-form').reset();
         renderUsersList();
       }
@@ -1919,7 +2608,10 @@ function bindEvents(state) {
       
       const itemIndex = state.inventory.findIndex(i => i.id === itemId);
       if (itemIndex !== -1) {
+        const oldThreshold = state.inventory[itemIndex].lowStock;
+        const itemName = state.inventory[itemIndex].name;
         state.inventory[itemIndex].lowStock = newThreshold;
+        logAudit('THRESHOLD_CHANGE', AUDIT_CATEGORIES.INVENTORY, `Low stock threshold for "${itemName}" changed: ${oldThreshold} → ${newThreshold}`, { itemId, oldThreshold, newThreshold });
         saveState(state);
         renderThresholds(state);
         
@@ -2079,6 +2771,11 @@ function bindEvents(state) {
     const result = processReturn(state, pendingReturnTransaction, selectedItems, reason, refundType, notes);
     if (!result) return;
 
+    logAudit('RETURN', AUDIT_CATEGORIES.RETURN,
+      `Return on ${pendingReturnTransaction.billNumber}: ${selectedItems.map(i => `${i.name} ×${i.qty}`).join(', ')} — Refund ${formatCurrency(result.refundAmount)} (${reason}, ${refundType})`,
+      { originalBillNumber: pendingReturnTransaction.billNumber, refundAmount: result.refundAmount }
+    );
+
     state = result.newState;
     saveState(state);
     renderView(state);
@@ -2116,6 +2813,12 @@ function bindEvents(state) {
     renderView(state);
   });
 
+  // Show/hide custom tax rate input
+  document.getElementById('inventory-tax-rate').addEventListener('change', (e) => {
+    const customInput = document.getElementById('inventory-tax-rate-custom');
+    customInput.classList.toggle('hidden', e.target.value !== 'custom');
+  });
+
   document.getElementById('inventory-form').addEventListener('submit', (event) => {
     event.preventDefault();
     const entry = {
@@ -2131,9 +2834,15 @@ function bindEvents(state) {
       sellingPrice: document.getElementById('inventory-price').value,
       description: document.getElementById('inventory-description').value.trim(),
       stock: document.getElementById('inventory-stock').value,
-      lowStock: document.getElementById('inventory-threshold').value
+      lowStock: document.getElementById('inventory-threshold').value,
+      hsnCode: document.getElementById('inventory-hsn').value.trim(),
+      itemTaxRate: document.getElementById('inventory-tax-rate').value === 'custom'
+        ? document.getElementById('inventory-tax-rate-custom').value
+        : document.getElementById('inventory-tax-rate').value,
+      taxInclusive: document.getElementById('inventory-tax-inclusive').value
     };
     state = addInventoryItem(state, entry);
+    logAudit('INVENTORY_ADD', AUDIT_CATEGORIES.INVENTORY, `Added item "${entry.name}" (SKU: ${entry.sku}), stock: ${entry.stock}, price: ₹${entry.sellingPrice}`, { sku: entry.sku, name: entry.name });
     saveState(state);
     document.getElementById('inventory-form').reset();
     renderView(state);
@@ -2150,6 +2859,8 @@ function bindEvents(state) {
       gst: document.getElementById('shop-gst').value.trim(),
       taxName: document.getElementById('shop-tax-name').value.trim(),
       taxRate: Number(document.getElementById('shop-tax-rate').value || 0),
+      taxType: document.getElementById('shop-tax-type').value,
+      taxInclusive: document.getElementById('shop-tax-inclusive').value,
       receiptPrefix: document.getElementById('shop-receipt-prefix').value.trim(),
       nextReceiptNumber: Number(document.getElementById('shop-next-receipt').value || 1001),
       printLayout: document.getElementById('shop-print-layout').value,
@@ -2158,6 +2869,7 @@ function bindEvents(state) {
     };
     shopProfile = profile;
     state = { ...state, shopProfile: profile };
+    logAudit('SETTINGS_CHANGE', AUDIT_CATEGORIES.SETTINGS, `Shop profile updated: "${profile.shopName}" by ${currentUser?.username}`);
     saveState(state);
     renderView(state);
     alert('Shop settings saved.');
@@ -2197,6 +2909,155 @@ function bindEvents(state) {
   document.getElementById('cashier-search').addEventListener('input', () => {
     renderCashier(state, document.getElementById('cashier-branch').value);
   });
+
+  // ─── Barcode Scanner Logic ────────────────────────────────────────────────
+
+  let barcodeBuffer = '';
+  let barcodeTimer = null;
+  const SCANNER_SPEED_THRESHOLD = 50; // ms — hardware scanners type faster than this
+  let lastKeystrokeTime = 0;
+  let isHardwareScanner = false;
+
+  function lookupBarcode(code) {
+    const branchId = document.getElementById('cashier-branch').value;
+    const allItems = state.inventory; // search all branches by barcode
+    const item = allItems.find(i =>
+      (i.barcode && i.barcode.trim().toLowerCase() === code.trim().toLowerCase()) ||
+      (i.sku && i.sku.trim().toLowerCase() === code.trim().toLowerCase())
+    );
+    return item;
+  }
+
+  function showBarcodeFeedback(message, isSuccess) {
+    const fb = document.getElementById('barcode-feedback');
+    fb.textContent = message;
+    fb.className = `barcode-feedback ${isSuccess ? 'feedback-success' : 'feedback-error'}`;
+    clearTimeout(fb._timer);
+    fb._timer = setTimeout(() => { fb.className = 'barcode-feedback hidden'; }, 2500);
+  }
+
+  function processBarcodeScan(code) {
+    if (!code) return;
+    const item = lookupBarcode(code);
+    if (item) {
+      addToCart(item);
+      renderCashier(state, document.getElementById('cashier-branch').value);
+      showBarcodeFeedback(`✓ Added: ${item.name}`, true);
+      document.getElementById('barcode-scan-input').value = '';
+      // Flash the input green
+      const input = document.getElementById('barcode-scan-input');
+      input.classList.add('scan-success-flash');
+      setTimeout(() => input.classList.remove('scan-success-flash'), 600);
+    } else {
+      showBarcodeFeedback(`✗ Not found: "${code}"`, false);
+      const input = document.getElementById('barcode-scan-input');
+      input.classList.add('scan-error-flash');
+      setTimeout(() => { input.classList.remove('scan-error-flash'); input.value = ''; }, 800);
+    }
+  }
+
+  // Keyboard wedge scanner: detects rapid key input followed by Enter
+  document.getElementById('barcode-scan-input').addEventListener('keydown', (e) => {
+    const now = Date.now();
+    const timeSinceLast = now - lastKeystrokeTime;
+    lastKeystrokeTime = now;
+
+    if (timeSinceLast < SCANNER_SPEED_THRESHOLD) {
+      isHardwareScanner = true;
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const code = document.getElementById('barcode-scan-input').value.trim();
+      processBarcodeScan(code);
+      barcodeBuffer = '';
+      isHardwareScanner = false;
+    }
+  });
+
+  // Also support manual typing then Enter
+  document.getElementById('barcode-scan-input').addEventListener('keyup', (e) => {
+    if (e.key === 'Enter') return;
+    // Clear after long pause (user stopped typing)
+    clearTimeout(barcodeTimer);
+    barcodeTimer = setTimeout(() => {
+      if (!isHardwareScanner) barcodeBuffer = '';
+    }, 3000);
+  });
+
+  // Camera scanning using BarcodeDetector API (Chromium only)
+  let cameraStream = null;
+  let cameraDetectionLoop = null;
+
+  document.getElementById('camera-scan-btn').addEventListener('click', async () => {
+    const overlay = document.getElementById('camera-scan-overlay');
+    overlay.classList.remove('hidden');
+    document.getElementById('camera-status').textContent = 'Requesting camera access...';
+
+    if (!('BarcodeDetector' in window)) {
+      document.getElementById('camera-status').textContent =
+        '⚠️ Camera barcode detection not supported in this browser. Use keyboard scanner input or type the barcode manually.';
+      return;
+    }
+
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      const video = document.getElementById('barcode-video');
+      video.srcObject = cameraStream;
+      await video.play();
+      document.getElementById('camera-status').textContent = 'Point camera at barcode...';
+
+      const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code', 'data_matrix'] });
+      let lastDetected = '';
+      let lastDetectedTime = 0;
+
+      cameraDetectionLoop = setInterval(async () => {
+        if (!video.readyState || video.readyState < 2) return;
+        try {
+          const barcodes = await detector.detect(video);
+          if (barcodes.length > 0) {
+            const code = barcodes[0].rawValue;
+            const now = Date.now();
+            // Debounce — don't re-scan same code within 2s
+            if (code === lastDetected && now - lastDetectedTime < 2000) return;
+            lastDetected = code;
+            lastDetectedTime = now;
+
+            document.getElementById('camera-status').textContent = `Detected: ${code}`;
+            processBarcodeScan(code);
+            if (lookupBarcode(code)) {
+              stopCamera();
+            }
+          }
+        } catch (_) {}
+      }, 200);
+    } catch (err) {
+      document.getElementById('camera-status').textContent = `Camera error: ${err.message}`;
+    }
+  });
+
+  function stopCamera() {
+    if (cameraDetectionLoop) { clearInterval(cameraDetectionLoop); cameraDetectionLoop = null; }
+    if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
+    document.getElementById('camera-scan-overlay').classList.add('hidden');
+  }
+
+  document.getElementById('close-camera-btn').addEventListener('click', stopCamera);
+
+  // Auto-focus scanner input when switching to cashier view
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.view === 'cashier') {
+        setTimeout(() => document.getElementById('barcode-scan-input')?.focus(), 100);
+      } else {
+        stopCamera();
+      }
+    });
+  });
+
+  // ─── End Barcode Scanner ─────────────────────────────────────────────────
 
   document.getElementById('cashier-catalog').addEventListener('click', (event) => {
     const button = event.target.closest('[data-add-item]');
@@ -2243,6 +3104,7 @@ function bindEvents(state) {
     }
     cart = cart.map((entry) => ({ ...entry, price: value }));
     priceOverride = value;
+    logAudit('PRICE_OVERRIDE', AUDIT_CATEGORIES.CART, `Price override applied: ₹${value} on ${cart.length} cart item(s)`, { value, itemCount: cart.length });
     renderCashier(state, document.getElementById('cashier-branch').value);
   });
 
@@ -2253,6 +3115,9 @@ function bindEvents(state) {
     }
     const branchId = document.getElementById('cashier-branch').value;
     addHeldBill(cart, branchId, activeDiscount);
+    const heldItems = cart.map(e => `${e.name} ×${e.qty}`).join(', ');
+    const heldTotal = cart.reduce((s, e) => s + e.qty * e.price, 0);
+    logAudit('HOLD', AUDIT_CATEGORIES.CART, `Bill held: ${heldItems} — ${formatCurrency(heldTotal)}`, { itemCount: cart.length, total: heldTotal });
     clearCart();
     activeDiscount = 0;
     priceOverride = null;
@@ -2263,6 +3128,11 @@ function bindEvents(state) {
   });
 
   document.getElementById('void-cart-btn').addEventListener('click', () => {
+    if (cart.length) {
+      const voidItems = cart.map(e => `${e.name} ×${e.qty}`).join(', ');
+      const voidTotal = cart.reduce((s, e) => s + e.qty * e.price, 0);
+      logAudit('VOID', AUDIT_CATEGORIES.CART, `Cart voided: ${voidItems} — ${formatCurrency(voidTotal)}`, { itemCount: cart.length });
+    }
     clearCart();
     activeDiscount = 0;
     priceOverride = null;
@@ -2287,12 +3157,112 @@ function bindEvents(state) {
     printReceipt(lastReceipt, state);
   });
 
+  // Split payment toggle
+  document.getElementById('split-payment-toggle').addEventListener('change', (e) => {
+    const isSplit = e.target.checked;
+    document.getElementById('single-payment-row').classList.toggle('hidden', isSplit);
+    document.getElementById('split-payment-rows').classList.toggle('hidden', !isSplit);
+    document.getElementById('split-summary').classList.toggle('hidden', !isSplit);
+    document.getElementById('add-split-row-btn').classList.toggle('hidden', !isSplit);
+    if (isSplit) updateSplitSummary();
+  });
+
+  // Add new split row button
+  document.getElementById('add-split-row-btn').addEventListener('click', () => {
+    const container = document.getElementById('split-payment-rows');
+    const rowCount = container.querySelectorAll('.split-row').length + 1;
+    const row = document.createElement('div');
+    row.className = 'split-row';
+    row.id = `split-row-${rowCount}`;
+    row.innerHTML = `
+      <select class="split-method">
+        <option>Cash</option>
+        <option>Card</option>
+        <option selected>UPI</option>
+        <option>Wallet</option>
+      </select>
+      <input type="number" class="split-amount" placeholder="Amount (₹)" min="0" step="0.01" />
+      <button class="split-remove-btn">✕</button>
+    `;
+    container.appendChild(row);
+    row.querySelector('.split-remove-btn').style.display = '';
+    // Show remove on first 2 rows too
+    container.querySelectorAll('.split-remove-btn').forEach(btn => { btn.style.display = ''; });
+    updateSplitSummary();
+  });
+
+  // Remove split row (delegated)
+  document.getElementById('split-payment-rows').addEventListener('click', (e) => {
+    if (!e.target.classList.contains('split-remove-btn')) return;
+    const rows = document.querySelectorAll('#split-payment-rows .split-row');
+    if (rows.length <= 2) return; // Keep minimum 2 rows
+    e.target.closest('.split-row').remove();
+    updateSplitSummary();
+  });
+
+  // Live split amount updates
+  document.getElementById('split-payment-rows').addEventListener('input', (e) => {
+    if (e.target.classList.contains('split-amount') || e.target.classList.contains('split-method')) {
+      updateSplitSummary();
+    }
+  });
+
+  function updateSplitSummary() {
+    const cartFinal = cart.reduce((sum, e) => sum + e.qty * e.price, 0);
+    const discPct = activeDiscount || 0;
+    const profile = state.shopProfile || {};
+    const taxRate = Number(profile.taxRate || 0);
+    const total = cartFinal * (1 - discPct / 100) * (1 + taxRate / 100);
+
+    const rows = document.querySelectorAll('#split-payment-rows .split-row');
+    let entered = 0;
+    const breakdown = [];
+    rows.forEach(row => {
+      const method = row.querySelector('.split-method').value;
+      const amt = Number(row.querySelector('.split-amount').value) || 0;
+      entered += amt;
+      if (amt > 0) breakdown.push(`${method}: ${formatCurrency(amt)}`);
+    });
+
+    const remaining = total - entered;
+    const summaryEl = document.getElementById('split-summary');
+    const isBalanced = Math.abs(remaining) <= 0.01;
+    summaryEl.innerHTML = `
+      <div class="split-breakdown">${breakdown.join(' + ') || 'No amounts entered'}</div>
+      <div class="split-remaining ${isBalanced ? 'split-balanced' : remaining < 0 ? 'split-over' : 'split-under'}">
+        ${isBalanced ? '✓ Balanced' : remaining > 0 ? `Remaining: ${formatCurrency(remaining)}` : `Over by: ${formatCurrency(-remaining)}`}
+      </div>
+    `;
+    // Auto-fill last row if only one amount is missing
+    const emptyRows = Array.from(rows).filter(r => !Number(r.querySelector('.split-amount').value));
+    if (emptyRows.length === 1 && remaining > 0) {
+      emptyRows[0].querySelector('.split-amount').placeholder = `Auto: ${formatCurrency(remaining)}`;
+    }
+  }
+
   document.getElementById('checkout-btn').addEventListener('click', () => {
     const branchId = document.getElementById('cashier-branch').value;
-    const paymentMethod = document.getElementById('payment-method').value;
     const customerPhone = document.getElementById('customer-phone').value;
-    
-    const result = checkoutCart(state, branchId, paymentMethod, 'Cashier', activeDiscount);
+    const isSplit = document.getElementById('split-payment-toggle').checked;
+
+    let paymentMethod = document.getElementById('payment-method').value;
+    let splitPayments = null;
+
+    if (isSplit) {
+      const rows = document.querySelectorAll('#split-payment-rows .split-row');
+      splitPayments = Array.from(rows).map(row => ({
+        method: row.querySelector('.split-method').value,
+        amount: Number(row.querySelector('.split-amount').value) || 0
+      })).filter(p => p.amount > 0);
+
+      if (!splitPayments.length) {
+        alert('Please enter amounts for the split payment methods.');
+        return;
+      }
+      paymentMethod = splitPayments.map(p => p.method).join(' + ');
+    }
+
+    const result = checkoutCart(state, branchId, paymentMethod, 'Cashier', activeDiscount, splitPayments);
     if (!result.success) {
       alert(result.message);
       return;
@@ -2309,6 +3279,11 @@ function bindEvents(state) {
     state = result.nextState;
     shopProfile = state.shopProfile || shopProfile;
     lastReceipt = result.transaction;
+    const txn = result.transaction;
+    logAudit('SALE', AUDIT_CATEGORIES.SALE,
+      `Bill ${txn.billNumber}: ${txn.items.map(i => `${i.name} ×${i.qty}`).join(', ')} — ${formatCurrency(txn.total)} via ${txn.paymentMethod}`,
+      { billNumber: txn.billNumber, total: txn.total, paymentMethod: txn.paymentMethod }
+    );
     saveState(state);
     clearCart();
     activeDiscount = 0;
@@ -2316,8 +3291,200 @@ function bindEvents(state) {
     document.getElementById('discount-input').value = '0';
     document.getElementById('price-override-input').value = '';
     document.getElementById('customer-phone').value = '';
+    // Reset split payment state
+    document.getElementById('split-payment-toggle').checked = false;
+    document.getElementById('single-payment-row').classList.remove('hidden');
+    document.getElementById('split-payment-rows').classList.add('hidden');
+    document.getElementById('split-summary').classList.add('hidden');
+    document.getElementById('add-split-row-btn').classList.add('hidden');
+    document.querySelectorAll('.split-amount').forEach(i => { i.value = ''; });
     renderView(state);
   });
+
+  // Audit log controls
+  document.getElementById('export-audit-btn').addEventListener('click', exportAuditCSV);
+  ['audit-search', 'audit-category-filter', 'audit-date-filter'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', renderAuditLog);
+    document.getElementById(id)?.addEventListener('change', renderAuditLog);
+  });
+
+  // ─── Employee Management Events ─────────────────────────────────────────────
+
+  // Populate branch select when panel opens
+  document.getElementById('add-employee-btn').addEventListener('click', () => {
+    selectedEmployeeId = null;
+    openEmpForm(null);
+    // populate branches in form
+    const sel = document.getElementById('emp-branch');
+    sel.innerHTML = state.branches.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  });
+
+  document.getElementById('emp-cancel-btn').addEventListener('click', () => {
+    document.getElementById('emp-form-card').classList.add('hidden');
+  });
+
+  document.getElementById('emp-save-btn').addEventListener('click', () => {
+    const card = document.getElementById('emp-form-card');
+    const editId = card.dataset.editId;
+    const fullName = document.getElementById('emp-fullname').value.trim();
+    const username = document.getElementById('emp-username').value.trim();
+    const password = document.getElementById('emp-password').value;
+    const role = document.getElementById('emp-role').value;
+    const phone = document.getElementById('emp-phone').value.trim();
+    const email = document.getElementById('emp-email').value.trim();
+    const position = document.getElementById('emp-position').value.trim();
+    const branchId = document.getElementById('emp-branch').value;
+    const joiningDate = document.getElementById('emp-joining').value;
+    const status = document.getElementById('emp-status').value;
+    const notes = document.getElementById('emp-notes').value.trim();
+    const errorEl = document.getElementById('emp-form-error');
+
+    if (!fullName || !username) { errorEl.textContent = 'Full name and username are required.'; return; }
+
+    if (editId) {
+      // Update existing employee profile
+      const idx = employees.findIndex(e => e.id === editId);
+      if (idx !== -1) {
+        employees[idx] = { ...employees[idx], fullName, role, phone, email, position, branchId, joiningDate, status, notes };
+        // If password provided, update auth credentials
+        if (password) {
+          const authIdx = authUsers.findIndex(u => u.username === employees[idx].username);
+          if (authIdx !== -1) { authUsers[authIdx].password = password; persistAuthUsers(authUsers); }
+        }
+        logAudit('EMPLOYEE_EDIT', AUDIT_CATEGORIES.USER, `Employee "${fullName}" profile updated`, { username });
+      }
+    } else {
+      // New employee — also create auth user
+      if (!password) { errorEl.textContent = 'Password is required for new employees.'; return; }
+      const authResult = addUser(username, password, role);
+      if (!authResult.success) { errorEl.textContent = authResult.message; return; }
+
+      const newEmp = {
+        id: `emp-${Date.now()}`,
+        username, fullName, role, phone, email, position,
+        branchId, joiningDate, status: status || 'active', notes,
+        createdAt: new Date().toISOString()
+      };
+      employees.push(newEmp);
+      logAudit('EMPLOYEE_ADD', AUDIT_CATEGORIES.USER, `New employee "${fullName}" (@${username}) added as ${role}`, { username, role });
+    }
+
+    saveEmployees();
+    card.classList.add('hidden');
+    renderEmployees(state);
+  });
+
+  // Employee card interactions (delegated)
+  document.getElementById('emp-cards-grid').addEventListener('click', (e) => {
+    const viewBtn = e.target.closest('.emp-view-btn');
+    if (viewBtn) { selectedEmployeeId = viewBtn.dataset.empId; renderEmployees(state); return; }
+    const editBtn = e.target.closest('.emp-edit-btn');
+    if (editBtn) {
+      const emp = employees.find(x => x.id === editBtn.dataset.empId);
+      if (emp) {
+        const sel = document.getElementById('emp-branch');
+        sel.innerHTML = state.branches.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+        openEmpForm(emp);
+      }
+      return;
+    }
+  });
+
+  // Detail view back + edit + delete (delegated)
+  document.getElementById('emp-back-btn').addEventListener('click', () => {
+    selectedEmployeeId = null;
+    renderEmployees(state);
+  });
+
+  document.getElementById('emp-detail-content').addEventListener('click', (e) => {
+    const editBtn = e.target.closest('.emp-edit-btn');
+    if (editBtn) {
+      const emp = employees.find(x => x.id === editBtn.dataset.empId);
+      if (emp) {
+        const sel = document.getElementById('emp-branch');
+        sel.innerHTML = state.branches.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+        openEmpForm(emp);
+      }
+      return;
+    }
+    const deleteBtn = e.target.closest('.emp-delete-btn');
+    if (deleteBtn) {
+      const empId = deleteBtn.dataset.empId;
+      const empUsername = deleteBtn.dataset.username;
+      const emp = employees.find(x => x.id === empId);
+      if (!emp) return;
+      if (!confirm(`Remove employee "${emp.fullName}"? This will also delete their login account.`)) return;
+      employees = employees.filter(x => x.id !== empId);
+      deleteUser(empUsername);
+      saveEmployees();
+      logAudit('EMPLOYEE_REMOVE', AUDIT_CATEGORIES.USER, `Employee "${emp.fullName}" (@${empUsername}) removed`, { username: empUsername });
+      selectedEmployeeId = null;
+      renderEmployees(state);
+      return;
+    }
+  });
+
+  // Employee search/filter
+  ['emp-search', 'emp-status-filter'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', () => renderEmployees(state));
+    document.getElementById(id)?.addEventListener('change', () => renderEmployees(state));
+  });
+
+  // ─── End Employee Events ──────────────────────────────────────────────────
+
+  // ─── Backup & Export Events ──────────────────────────────────────────────
+
+  document.getElementById('export-full-backup-btn').addEventListener('click', () => {
+    exportFullBackup(state);
+  });
+
+  document.getElementById('import-backup-file').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById('backup-restore-status');
+    statusEl.textContent = 'Restoring backup...';
+    importFromBackup(file, (success, message, newState) => {
+      statusEl.textContent = message;
+      statusEl.className = `backup-status ${success ? 'backup-success' : 'backup-error'}`;
+      if (success) {
+        setTimeout(() => location.reload(), 1500);
+      }
+    });
+    e.target.value = ''; // reset so same file can be re-selected
+  });
+
+  // CSV Export buttons
+  document.getElementById('export-transactions-csv').addEventListener('click', () => exportTransactionsCSV(state));
+  document.getElementById('export-inventory-csv').addEventListener('click', () => exportInventoryCSV(state));
+  document.getElementById('export-customers-csv').addEventListener('click', () => exportCustomersCSV());
+  document.getElementById('export-employees-csv').addEventListener('click', () => exportEmployeesCSV());
+  document.getElementById('export-returns-csv').addEventListener('click', () => exportReturnsCSV());
+  document.getElementById('export-tax-report-csv').addEventListener('click', () => exportTaxReportCSV(state));
+
+  // CSV Import Inventory
+  document.getElementById('import-inventory-csv').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById('import-inventory-status');
+    statusEl.textContent = 'Importing...';
+    importInventoryFromCSV(file, state, (success, message, newState) => {
+      statusEl.textContent = message;
+      statusEl.className = `backup-status ${success ? 'backup-success' : 'backup-error'}`;
+      if (success && newState) {
+        state = newState;
+        renderView(state);
+      }
+    });
+    e.target.value = '';
+  });
+
+  // CSV Template download
+  document.getElementById('csv-template-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    generateInventoryCSVTemplate();
+  });
+
+  // ─── End Backup & Export Events ──────────────────────────────────────────
 
   window.addEventListener('storage', () => {
     const freshState = loadState();
@@ -2347,6 +3514,8 @@ function initializeApp() {
   shopProfile = state.shopProfile || shopProfile;
   customers = loadCustomers();
   returns = loadReturns();
+  auditLog = loadAuditLog();
+  employees = loadEmployees();
   
   // Load auth users from Firebase if available (for cross-device sync)
   if (firebaseEnabled) {
