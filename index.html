@@ -42,6 +42,7 @@
           <div class="view-switcher">
             <button class="view-btn active" data-view="admin">Admin</button>
             <button class="view-btn" data-view="cashier">Cashier</button>
+            <button class="view-btn" data-view="queue">Queue</button>
             <button class="view-btn" data-view="settings">Settings</button>
           </div>
         </div>
@@ -312,6 +313,46 @@
               <button id="checkout-btn" class="primary">Checkout</button>
             </div>
             <div id="receipt-preview" class="receipt"></div>
+          </div>
+        </section>
+
+        <section id="queue-panel" class="panel hidden" aria-labelledby="queue-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Live POS Queue</p>
+              <h2 id="queue-title">Active Bills Across Devices</h2>
+            </div>
+            <span id="queue-badge" class="pill">0 bills</span>
+          </div>
+
+          <div class="card">
+            <div class="panel-header compact">
+              <h3>Open Bills by Device</h3>
+              <span class="muted" id="queue-status">Syncing...</span>
+            </div>
+            <div id="queue-list" class="list"></div>
+          </div>
+
+          <div class="card">
+            <h3>Queue Statistics</h3>
+            <div class="billing-toolbar">
+              <div>
+                <p class="stat-label">Total Open Bills</p>
+                <h3 id="queue-total-bills">0</h3>
+              </div>
+              <div>
+                <p class="stat-label">Devices Active</p>
+                <h3 id="queue-active-devices">0</h3>
+              </div>
+              <div>
+                <p class="stat-label">Total Items</p>
+                <h3 id="queue-total-items">0</h3>
+              </div>
+              <div>
+                <p class="stat-label">Estimated Value</p>
+                <h3 id="queue-total-value">₹0.00</h3>
+              </div>
+            </div>
           </div>
         </section>
       </main>

@@ -16,6 +16,8 @@ let lastReceipt = null;
 let heldBills = [];
 let activeDiscount = 0;
 let priceOverride = null;
+let shopId = 'default-shop'; // Shop ID for multi-device sync
+let globalHeldBills = []; // Holds all bills from all devices
 let shopProfile = {
   shopName: 'Billing & Inventory Hub',
   ownerName: '',
@@ -261,6 +263,82 @@ function cloudLoadAuthUsers() {
       resolve(null);
     }
   });
+}
+
+// Device ID for tracking which device the bill came from
+function getDeviceId() {
+  if (typeof window === 'undefined') return 'node-env';
+  let deviceId = localStorage.getItem('device-id');
+  if (!deviceId) {
+    deviceId = `device_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    localStorage.setItem('device-id', deviceId);
+  }
+  return deviceId;
+}
+
+// Cloud sync for held bills (shared across all devices in shop)
+function cloudSaveHeldBills(bills, shopId = 'default-shop') {
+  if (!firebaseEnabled) return;
+  try {
+    const ref = window.firebase.database().ref(`/shops/${shopId}/heldBills`);
+    const billsWithMetadata = bills.map((bill, idx) => ({
+      ...bill,
+      id: bill.id || `bill_${Date.now()}_${idx}`,
+      deviceId: bill.deviceId || getDeviceId(),
+      cashier: bill.cashier || currentUser?.displayName || 'Unknown',
+      createdAt: bill.createdAt || Date.now(),
+      status: bill.status || 'open'
+    }));
+    ref.set(billsWithMetadata).catch((e) => console.warn('cloudSaveHeldBills failed', e));
+  } catch (e) {
+    console.warn('cloudSaveHeldBills error', e);
+  }
+}
+
+function cloudLoadHeldBills(shopId = 'default-shop') {
+  if (!firebaseEnabled) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    try {
+      const ref = window.firebase.database().ref(`/shops/${shopId}/heldBills`);
+      ref.once('value', (snap) => {
+        if (snap.exists()) {
+          const val = snap.val();
+          resolve(Array.isArray(val) ? val : Object.values(val));
+        } else {
+          resolve([]);
+        }
+      }).catch((e) => {
+        console.warn('cloudLoadHeldBills error', e);
+        resolve([]);
+      });
+    } catch (e) {
+      console.warn('cloudLoadHeldBills error', e);
+      resolve([]);
+    }
+  });
+}
+
+let heldBillsListener = null;
+function cloudSubscribeHeldBills(shopId = 'default-shop', onUpdate) {
+  if (!firebaseEnabled) return;
+  try {
+    const ref = window.firebase.database().ref(`/shops/${shopId}/heldBills`);
+    heldBillsListener = ref.on('value', (snap) => {
+      const val = snap.val();
+      const bills = val ? (Array.isArray(val) ? val : Object.values(val)) : [];
+      onUpdate(bills);
+    });
+  } catch (e) {
+    console.warn('cloudSubscribeHeldBills error', e);
+  }
+}
+
+function cloudUnsubscribeHeldBills(shopId = 'default-shop') {
+  if (!firebaseEnabled) return;
+  try {
+    const ref = window.firebase.database().ref(`/shops/${shopId}/heldBills`);
+    ref.off();
+  } catch (e) { }
 }
 
 function loadAuthUsers() {
@@ -570,6 +648,48 @@ export function getInventoryForBranch(state, branchId) {
   return state.inventory.filter((item) => item.branchId === branchId);
 }
 
+// Held Bills Management Functions
+export function addHeldBill(items, branchId, discount = 0) {
+  const bill = {
+    id: `bill_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    items: [...items],
+    branchId,
+    discount,
+    deviceId: getDeviceId(),
+    cashier: currentUser?.displayName || 'Unknown',
+    createdAt: Date.now(),
+    status: 'open'
+  };
+  heldBills.push(bill);
+  globalHeldBills.push(bill);
+  cloudSaveHeldBills(globalHeldBills, shopId);
+  return bill;
+}
+
+export function removeHeldBill(billId) {
+  heldBills = heldBills.filter((b) => b.id !== billId);
+  globalHeldBills = globalHeldBills.filter((b) => b.id !== billId);
+  cloudSaveHeldBills(globalHeldBills, shopId);
+}
+
+export function restoreHeldBill(billId) {
+  const bill = globalHeldBills.find((b) => b.id === billId);
+  if (!bill) return false;
+  cart = [...bill.items];
+  activeDiscount = bill.discount || 0;
+  removeHeldBill(billId);
+  return true;
+}
+
+export function transferHeldBill(billId, toCashier) {
+  const bill = globalHeldBills.find((b) => b.id === billId);
+  if (!bill) return false;
+  bill.cashier = toCashier;
+  bill.transferredAt = Date.now();
+  cloudSaveHeldBills(globalHeldBills, shopId);
+  return true;
+}
+
 export function checkoutCart(state, branchId, paymentMethod, cashierName = 'Cashier', discountPercent = 0) {
   const selectedItems = cart.filter((entry) => entry.branchId === branchId);
   if (!selectedItems.length) {
@@ -853,8 +973,8 @@ function renderCashier(state, branchId) {
 }
 
 function getAllowedViews() {
-  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'settings'];
-  if (currentUser?.role === 'cashier') return ['cashier'];
+  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'queue', 'settings'];
+  if (currentUser?.role === 'cashier') return ['cashier', 'queue'];
   return [];
 }
 
@@ -919,6 +1039,7 @@ function renderView(state) {
 
   document.getElementById('admin-panel').classList.toggle('hidden', currentView !== 'admin');
   document.getElementById('cashier-panel').classList.toggle('hidden', currentView !== 'cashier');
+  document.getElementById('queue-panel').classList.toggle('hidden', currentView !== 'queue');
   document.getElementById('settings-panel').classList.toggle('hidden', currentView !== 'settings');
   document.querySelectorAll('.view-btn').forEach((button) => {
     const allowed = allowedViews.includes(button.dataset.view);
@@ -927,6 +1048,7 @@ function renderView(state) {
   });
   renderAdmin(state);
   renderCashier(state, document.getElementById('cashier-branch')?.value || state.branches[0]?.id);
+  renderQueue(state);
   renderSettings(state);
 }
 
@@ -963,6 +1085,118 @@ function renderSettings(state) {
   document.getElementById('shop-print-layout').value = profile.printLayout || 'standard';
   document.getElementById('shop-website').value = profile.website || '';
   document.getElementById('shop-footer').value = profile.footer || '';
+}
+
+function renderQueue(state) {
+  const queueList = document.getElementById('queue-list');
+  const queueBadge = document.getElementById('queue-badge');
+  const queueStatus = document.getElementById('queue-status');
+  const queueTotalBills = document.getElementById('queue-total-bills');
+  const queueActiveDevices = document.getElementById('queue-active-devices');
+  const queueTotalItems = document.getElementById('queue-total-items');
+  const queueTotalValue = document.getElementById('queue-total-value');
+
+  if (!globalHeldBills.length) {
+    queueList.innerHTML = '<div class="list-item"><p class="muted">No active bills in queue</p></div>';
+    queueBadge.textContent = '0 bills';
+    queueStatus.textContent = 'Queue empty';
+    queueTotalBills.textContent = '0';
+    queueActiveDevices.textContent = '0';
+    queueTotalItems.textContent = '0';
+    queueTotalValue.textContent = '₹0.00';
+    return;
+  }
+
+  // Group bills by device
+  const billsByDevice = {};
+  globalHeldBills.forEach((bill) => {
+    if (!billsByDevice[bill.deviceId]) {
+      billsByDevice[bill.deviceId] = [];
+    }
+    billsByDevice[bill.deviceId].push(bill);
+  });
+
+  // Calculate statistics
+  const totalItems = globalHeldBills.reduce((sum, bill) => sum + (bill.items?.length || 0), 0);
+  const totalValue = globalHeldBills.reduce((sum, bill) => {
+    const billTotal = bill.items?.reduce((s, item) => s + (item.qty * item.price), 0) || 0;
+    return sum + (billTotal - (billTotal * (bill.discount || 0) / 100));
+  }, 0);
+
+  // Update statistics
+  queueBadge.textContent = `${globalHeldBills.length} bills`;
+  queueStatus.textContent = 'Live sync active';
+  queueTotalBills.textContent = globalHeldBills.length.toString();
+  queueActiveDevices.textContent = Object.keys(billsByDevice).length.toString();
+  queueTotalItems.textContent = totalItems.toString();
+  queueTotalValue.textContent = formatCurrency(totalValue);
+
+  // Render bills grouped by device
+  queueList.innerHTML = Object.entries(billsByDevice)
+    .map(([deviceId, deviceBills]) => {
+      const deviceShort = deviceId.substring(0, 14) + '...';
+      const deviceBillsHtml = deviceBills
+        .map((bill) => {
+          const billSubtotal = bill.items?.reduce((s, item) => s + (item.qty * item.price), 0) || 0;
+          const billDiscount = billSubtotal * ((bill.discount || 0) / 100);
+          const billTotal = billSubtotal - billDiscount;
+          const itemsText = bill.items?.map((i) => `${i.name} (${i.qty})`).join(', ') || 'No items';
+          const createdTime = new Date(bill.createdAt).toLocaleTimeString();
+          
+          return `
+            <div style="padding: 8px; border-left: 3px solid #5b6cff; background: #f9fbff; margin: 6px 0; border-radius: 6px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <strong>${bill.cashier}</strong>
+                <span class="muted" style="font-size: 0.8rem;">${createdTime}</span>
+              </div>
+              <p class="muted" style="margin: 2px 0; font-size: 0.85rem;">${itemsText}</p>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                <span class="small" style="color: #14213d;">₹${billTotal.toFixed(2)}</span>
+                <div style="gap: 6px; display: flex;">
+                  <button class="restore-bill-btn" data-bill-id="${bill.id}" style="padding: 4px 8px; font-size: 0.8rem; background: #f0f4ff; color: #1c3b7a; border: none; border-radius: 6px; cursor: pointer;">Restore</button>
+                  <button class="transfer-bill-btn" data-bill-id="${bill.id}" style="padding: 4px 8px; font-size: 0.8rem; background: #f0f4ff; color: #1c3b7a; border: none; border-radius: 6px; cursor: pointer;">Transfer</button>
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+      
+      return `
+        <div class="list-item" style="padding: 10px; margin-bottom: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong style="color: #102445;">📱 Device: ${deviceShort}</strong>
+            <span class="pill" style="font-size: 0.8rem;">${deviceBills.length} bills</span>
+          </div>
+          ${deviceBillsHtml}
+        </div>
+      `;
+    })
+    .join('');
+
+  // Add event listeners for restore buttons
+  document.querySelectorAll('.restore-bill-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const billId = btn.getAttribute('data-bill-id');
+      if (restoreHeldBill(billId)) {
+        currentView = 'cashier';
+        renderView(state);
+        alert('Bill restored to cart. Ready for checkout.');
+      }
+    });
+  });
+
+  // Add event listeners for transfer buttons
+  document.querySelectorAll('.transfer-bill-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const billId = btn.getAttribute('data-bill-id');
+      const newCashier = prompt('Enter cashier name to transfer to:');
+      if (newCashier && transferHeldBill(billId, newCashier)) {
+        alert(`Bill transferred to ${newCashier}`);
+        renderQueue(state);
+      }
+    });
+  });
 }
 
 function printReceipt(receipt, state) {
@@ -1234,14 +1468,15 @@ function bindEvents(state) {
       alert('Cart is empty.');
       return;
     }
-    heldBills.push({ items: [...cart], branchId: document.getElementById('cashier-branch').value, discount: activeDiscount, timestamp: new Date().toLocaleString() });
+    const branchId = document.getElementById('cashier-branch').value;
+    addHeldBill(cart, branchId, activeDiscount);
     clearCart();
     activeDiscount = 0;
     priceOverride = null;
     document.getElementById('discount-input').value = '0';
     document.getElementById('price-override-input').value = '';
     renderView(state);
-    alert('Bill held successfully.');
+    alert('Bill held successfully and synced to cloud.');
   });
 
   document.getElementById('void-cart-btn').addEventListener('click', () => {
@@ -1363,6 +1598,16 @@ function initializeApp() {
             saveState(state);
             renderView(state);
           } catch (e) { console.warn('Error applying remote state', e); }
+        });
+        
+        // Subscribe to shared held bills for live queue
+        cloudLoadHeldBills(shopId).then((bills) => {
+          globalHeldBills = bills;
+          renderQueue(state);
+        });
+        cloudSubscribeHeldBills(shopId, (bills) => {
+          globalHeldBills = bills;
+          renderQueue(state);
         });
       }
     }
