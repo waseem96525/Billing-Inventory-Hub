@@ -192,6 +192,13 @@ label span { font-size: 0.9rem; font-weight: 500; color: #14213d; }
   color: #d14343;
   font-size: 0.95rem;
 }
+.stack-form button.primary {
+  min-height: 44px;
+  width: 100%;
+  font-size: 1rem;
+  font-weight: 500;
+  touch-action: manipulation;
+}
 .ghost-btn {
   background: rgba(255,255,255,0.16);
   color: white;
@@ -246,6 +253,10 @@ label span { font-size: 0.9rem; font-weight: 500; color: #14213d; }
   button { padding: 9px 12px; font-size: 0.95rem; }
   .login-card { width: 100%; padding: 20px; border-radius: 20px; }
   .login-card h2 { font-size: 1.3rem; }
+  .login-screen { padding: 16px; }
+  .login-card input, .login-card select { font-size: 16px; }
+  .login-copy { margin-bottom: 14px; }
+  .stack-form button.primary { min-height: 48px; margin-top: 8px; }
   .panel-header { flex-direction: column; }
   .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
@@ -286,6 +297,10 @@ label span { font-size: 0.9rem; font-weight: 500; color: #14213d; }
   .login-card { padding: 16px; border-radius: 16px; box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08); }
   .login-card h2 { font-size: 1.2rem; margin-bottom: 6px; }
   .login-copy { margin-bottom: 12px; }
+  .login-card input, .login-card select { font-size: 16px; padding: 10px 12px; }
+  .login-card label { gap: 8px; margin: 12px 0; }
+  .login-form { gap: 10px; }
+  .stack-form button.primary { min-height: 48px; width: 100%; margin-top: 10px; font-size: 0.95rem; }
   .action-row { gap: 6px; margin-top: 10px; }
   .action-row button { padding: 8px 10px; font-size: 0.85rem; }
   .report-grid { grid-template-columns: 1fr; gap: 8px; margin-top: 8px; }
