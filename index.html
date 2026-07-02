@@ -43,6 +43,9 @@
             <button class="view-btn active" data-view="admin">Admin</button>
             <button class="view-btn" data-view="cashier">Cashier</button>
             <button class="view-btn" data-view="queue">Queue</button>
+            <button class="view-btn" data-view="customers">Customers</button>
+            <button class="view-btn" data-view="returns">Returns</button>
+            <button class="view-btn" data-view="analytics">Analytics</button>
             <button class="view-btn" data-view="settings">Settings</button>
           </div>
         </div>
@@ -68,6 +71,10 @@
         <div class="stat-card">
           <p class="stat-label">Transactions</p>
           <h3 id="transactions-count">0</h3>
+        </div>
+        <div class="stat-card">
+          <p class="stat-label">Total returns</p>
+          <h3 id="returns-count">0</h3>
         </div>
       </section>
 
@@ -121,6 +128,12 @@
               <button class="primary" type="submit">Update login</button>
               <p id="account-feedback" class="account-feedback"></p>
             </form>
+          </div>
+
+          <div class="card">
+            <h3>📦 Low Stock Thresholds</h3>
+            <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Set minimum stock levels for each item. You'll receive alerts when stock falls below the threshold.</p>
+            <div id="thresholds-container" class="thresholds-grid"></div>
           </div>
         </section>
 
@@ -287,6 +300,10 @@
             <div id="cart-list" class="list"></div>
             <div class="billing-toolbar">
               <label>
+                <span>Customer Phone</span>
+                <input id="customer-phone" type="tel" placeholder="Optional" />
+              </label>
+              <label>
                 <span>Discount %</span>
                 <input id="discount-input" type="number" min="0" max="100" value="0" />
               </label>
@@ -352,6 +369,275 @@
                 <p class="stat-label">Estimated Value</p>
                 <h3 id="queue-total-value">₹0.00</h3>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="customers-panel" class="panel hidden" aria-labelledby="customers-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Customer Relationship</p>
+              <h2 id="customers-title">Customer Profiles & Loyalty</h2>
+            </div>
+            <input id="customer-search" type="text" placeholder="Search by phone or name" class="search-input" />
+          </div>
+
+          <div class="customers-grid">
+            <!-- Search Results / Customer List -->
+            <div class="customers-section">
+              <h3>All Customers</h3>
+              <table class="customers-table">
+                <thead>
+                  <tr>
+                    <th>Phone</th>
+                    <th>Name</th>
+                    <th>Transactions</th>
+                    <th>Total Spent</th>
+                    <th>Loyalty Points</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-list"></tbody>
+              </table>
+              <p id="customers-empty" class="empty-state">No customers yet. Phone numbers saved at checkout will appear here.</p>
+            </div>
+
+            <!-- Customer Detail View -->
+            <div id="customer-detail-view" class="customer-detail hidden">
+              <button class="close-btn" id="close-customer-detail">← Back</button>
+              
+              <div class="detail-card">
+                <h3 id="detail-customer-name">Customer Name</h3>
+                <p id="detail-customer-phone" class="phone-display"></p>
+              </div>
+
+              <div class="detail-grid">
+                <div class="stat-card">
+                  <p class="card-label">Total Transactions</p>
+                  <h4 id="detail-trans-count">0</h4>
+                </div>
+                <div class="stat-card">
+                  <p class="card-label">Total Spent</p>
+                  <h4 id="detail-total-spent">₹0.00</h4>
+                </div>
+                <div class="stat-card">
+                  <p class="card-label">Avg. Transaction</p>
+                  <h4 id="detail-avg-trans">₹0.00</h4>
+                </div>
+                <div class="stat-card">
+                  <p class="card-label">Loyalty Points</p>
+                  <h4 id="detail-loyalty-points">0</h4>
+                </div>
+              </div>
+
+              <div class="detail-section">
+                <h4>Purchase History</h4>
+                <table class="history-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Amount</th>
+                      <th>Items</th>
+                      <th>Points Earned</th>
+                    </tr>
+                  </thead>
+                  <tbody id="detail-history-table"></tbody>
+                </table>
+              </div>
+
+              <div class="detail-section">
+                <h4>Loyalty Management</h4>
+                <div class="loyalty-controls">
+                  <label>
+                    <span>Current Points</span>
+                    <input id="detail-points-input" type="number" min="0" value="0" />
+                  </label>
+                  <button id="update-points-btn" class="primary-sm">Update Points</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="returns-panel" class="panel hidden" aria-labelledby="returns-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Post-sale Management</p>
+              <h2 id="returns-title">Returns & Refunds</h2>
+            </div>
+          </div>
+
+          <!-- Return Search -->
+          <div class="returns-search-card">
+            <h3>🔍 Find Transaction to Return</h3>
+            <p style="color:#666;font-size:14px;margin-bottom:15px">Enter the bill/receipt number from the original transaction to process a return.</p>
+            <div class="return-search-row">
+              <input id="return-receipt-input" placeholder="e.g. INV-1001" />
+              <button id="return-search-btn" class="primary">Search</button>
+            </div>
+            <div id="return-search-result" class="hidden"></div>
+          </div>
+
+          <!-- Return Form (shown after search) -->
+          <div id="return-form-card" class="returns-form-card hidden">
+            <h3>📦 Select Items to Return</h3>
+            <div id="return-items-list" class="return-items-list"></div>
+
+            <div class="return-meta">
+              <div class="return-meta-field">
+                <label for="return-reason">Return Reason</label>
+                <select id="return-reason">
+                  <option value="defective">Defective / Damaged</option>
+                  <option value="wrong_item">Wrong Item</option>
+                  <option value="customer_change">Customer Changed Mind</option>
+                  <option value="quality">Quality Issue</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div class="return-meta-field">
+                <label for="return-refund-type">Refund Type</label>
+                <select id="return-refund-type">
+                  <option value="full">Full Refund</option>
+                  <option value="partial">Partial Refund</option>
+                  <option value="store_credit">Store Credit</option>
+                  <option value="exchange">Exchange Only</option>
+                </select>
+              </div>
+              <div class="return-meta-field">
+                <label for="return-notes">Notes (optional)</label>
+                <input id="return-notes" placeholder="Additional notes..." />
+              </div>
+            </div>
+
+            <div class="return-summary">
+              <div class="return-summary-row">
+                <span>Items to return:</span>
+                <strong id="return-item-count">0</strong>
+              </div>
+              <div class="return-summary-row">
+                <span>Refund amount:</span>
+                <strong id="return-refund-amount">₹0.00</strong>
+              </div>
+            </div>
+
+            <div class="return-actions">
+              <button id="process-return-btn" class="primary">✓ Process Return</button>
+              <button id="cancel-return-btn" class="ghost-btn">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Return History -->
+          <div class="returns-history-card">
+            <h3>📋 Return History</h3>
+            <div id="returns-history-list"></div>
+          </div>
+        </section>
+
+        <section id="analytics-panel" class="panel hidden" aria-labelledby="analytics-title">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Business Intelligence</p>
+              <h2 id="analytics-title">Analytics & Reports</h2>
+            </div>
+            <div class="analytics-controls">
+              <select id="analytics-period" class="period-select">
+                <option value="today">Today</option>
+                <option value="week">This Week</option>
+                <option value="month" selected>This Month</option>
+                <option value="all">All Time</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="analytics-grid">
+            <!-- Summary Cards -->
+            <div class="analytics-summary">
+              <div class="summary-card">
+                <p class="card-label">Total Revenue</p>
+                <h3 id="analytics-revenue">₹0.00</h3>
+              </div>
+              <div class="summary-card">
+                <p class="card-label">Total Transactions</p>
+                <h3 id="analytics-trans-count">0</h3>
+              </div>
+              <div class="summary-card">
+                <p class="card-label">Total Items Sold</p>
+                <h3 id="analytics-items-count">0</h3>
+              </div>
+              <div class="summary-card">
+                <p class="card-label">Avg Bill Value</p>
+                <h3 id="analytics-avg-bill">₹0.00</h3>
+              </div>
+            </div>
+
+            <!-- Sales Trend Chart -->
+            <div class="analytics-section">
+              <h3>Sales Trend</h3>
+              <canvas id="sales-trend-chart" width="400" height="200"></canvas>
+            </div>
+
+            <!-- Branch Performance -->
+            <div class="analytics-section">
+              <h3>Branch Performance</h3>
+              <table class="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Branch</th>
+                    <th>Revenue</th>
+                    <th>Transactions</th>
+                    <th>Avg Bill</th>
+                  </tr>
+                </thead>
+                <tbody id="branch-performance-table"></tbody>
+              </table>
+            </div>
+
+            <!-- Top Products -->
+            <div class="analytics-section">
+              <h3>Top 10 Products</h3>
+              <table class="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Rank</th>
+                    <th>Product</th>
+                    <th>Qty Sold</th>
+                    <th>Revenue</th>
+                  </tr>
+                </thead>
+                <tbody id="top-products-table"></tbody>
+              </table>
+            </div>
+
+            <!-- Cashier Performance -->
+            <div class="analytics-section">
+              <h3>Cashier Performance</h3>
+              <table class="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Cashier</th>
+                    <th>Transactions</th>
+                    <th>Revenue</th>
+                    <th>Avg Bill</th>
+                  </tr>
+                </thead>
+                <tbody id="cashier-performance-table"></tbody>
+              </table>
+            </div>
+
+            <!-- Payment Methods -->
+            <div class="analytics-section">
+              <h3>Payment Method Breakdown</h3>
+              <table class="analytics-table">
+                <thead>
+                  <tr>
+                    <th>Payment Method</th>
+                    <th>Count</th>
+                    <th>Amount</th>
+                    <th>% of Total</th>
+                  </tr>
+                </thead>
+                <tbody id="payment-methods-table"></tbody>
+              </table>
             </div>
           </div>
         </section>

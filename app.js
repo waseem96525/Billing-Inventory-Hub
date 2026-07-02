@@ -18,6 +18,10 @@ let activeDiscount = 0;
 let priceOverride = null;
 let shopId = 'default-shop'; // Shop ID for multi-device sync
 let globalHeldBills = []; // Holds all bills from all devices
+let customers = []; // Customer profiles with loyalty points
+let selectedCustomerForDetail = null; // Track customer detail view
+let returns = []; // Return/refund records
+let pendingReturnTransaction = null; // Transaction selected for return
 let shopProfile = {
   shopName: 'Billing & Inventory Hub',
   ownerName: '',
@@ -827,6 +831,8 @@ function renderAdmin(state) {
   stockAlertsCount.textContent = lowStockItems.toString();
   revenueCount.textContent = formatCurrency(state.transactions.reduce((sum, entry) => sum + entry.total, 0));
   transactionsCount.textContent = state.transactions.length.toString();
+  const returnsCountEl = document.getElementById('returns-count');
+  if (returnsCountEl) returnsCountEl.textContent = returns.length.toString();
 
   branchSelect.innerHTML = state.branches
     .map((branch) => `<option value="${branch.id}" ${branch.id === state.branches[0]?.id ? 'selected' : ''}>${branch.name}</option>`)
@@ -973,8 +979,8 @@ function renderCashier(state, branchId) {
 }
 
 function getAllowedViews() {
-  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'queue', 'settings'];
-  if (currentUser?.role === 'cashier') return ['cashier', 'queue'];
+  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'queue', 'customers', 'returns', 'analytics', 'settings'];
+  if (currentUser?.role === 'cashier') return ['cashier', 'queue', 'customers', 'returns'];
   return [];
 }
 
@@ -1040,6 +1046,9 @@ function renderView(state) {
   document.getElementById('admin-panel').classList.toggle('hidden', currentView !== 'admin');
   document.getElementById('cashier-panel').classList.toggle('hidden', currentView !== 'cashier');
   document.getElementById('queue-panel').classList.toggle('hidden', currentView !== 'queue');
+  document.getElementById('customers-panel').classList.toggle('hidden', currentView !== 'customers');
+  document.getElementById('returns-panel').classList.toggle('hidden', currentView !== 'returns');
+  document.getElementById('analytics-panel').classList.toggle('hidden', currentView !== 'analytics');
   document.getElementById('settings-panel').classList.toggle('hidden', currentView !== 'settings');
   document.querySelectorAll('.view-btn').forEach((button) => {
     const allowed = allowedViews.includes(button.dataset.view);
@@ -1049,7 +1058,488 @@ function renderView(state) {
   renderAdmin(state);
   renderCashier(state, document.getElementById('cashier-branch')?.value || state.branches[0]?.id);
   renderQueue(state);
+  renderCustomers(state);
+  renderReturns(state);
+  renderAnalytics(state);
   renderSettings(state);
+}
+
+// Analytics & Reporting Functions
+function getAnalyticsPeriod() {
+  return document.getElementById('analytics-period')?.value || 'month';
+}
+
+function filterTransactionsByPeriod(transactions, period) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
+  if (period === 'today') {
+    return transactions.filter(t => {
+      const tDate = new Date(t.timestamp);
+      const tDay = new Date(tDate.getFullYear(), tDate.getMonth(), tDate.getDate());
+      return tDay.getTime() === today.getTime();
+    });
+  } else if (period === 'week') {
+    const weekAgo = new Date(today);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    return transactions.filter(t => new Date(t.timestamp) >= weekAgo);
+  } else if (period === 'month') {
+    const monthAgo = new Date(today);
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+    return transactions.filter(t => new Date(t.timestamp) >= monthAgo);
+  }
+  return transactions;
+}
+
+function calculateAnalytics(state, period) {
+  const allTransactions = state.transactions || [];
+  const transactions = filterTransactionsByPeriod(allTransactions, period);
+  
+  const totalRevenue = transactions.reduce((sum, t) => sum + (Number(t.total) || 0), 0);
+  const totalTransactions = transactions.length;
+  const totalItems = transactions.reduce((sum, t) => sum + (t.items || []).reduce((s, item) => s + Number(item.qty || 0), 0), 0);
+  const avgBill = totalTransactions > 0 ? totalRevenue / totalTransactions : 0;
+
+  // Branch Performance
+  const branchMap = {};
+  const branches = state.branches || [];
+  branches.forEach(branch => {
+    branchMap[branch.id] = { name: branch.name, revenue: 0, count: 0, items: 0 };
+  });
+  transactions.forEach(t => {
+    if (branchMap[t.branchId]) {
+      branchMap[t.branchId].revenue += Number(t.total) || 0;
+      branchMap[t.branchId].count += 1;
+      branchMap[t.branchId].items += (t.items || []).reduce((s, item) => s + Number(item.qty || 0), 0);
+    }
+  });
+
+  // Top Products
+  const productMap = {};
+  transactions.forEach(t => {
+    (t.items || []).forEach(item => {
+      if (!productMap[item.id]) {
+        productMap[item.id] = { name: item.name, qty: 0, revenue: 0 };
+      }
+      productMap[item.id].qty += Number(item.qty) || 0;
+      productMap[item.id].revenue += Number(item.qty || 0) * Number(item.rate || 0);
+    });
+  });
+
+  // Cashier Performance
+  const cashierMap = {};
+  transactions.forEach(t => {
+    const cashier = t.cashierName || 'Unknown';
+    if (!cashierMap[cashier]) {
+      cashierMap[cashier] = { count: 0, revenue: 0 };
+    }
+    cashierMap[cashier].count += 1;
+    cashierMap[cashier].revenue += Number(t.total) || 0;
+  });
+
+  // Payment Methods
+  const paymentMap = {};
+  transactions.forEach(t => {
+    const method = t.paymentMethod || 'Unknown';
+    if (!paymentMap[method]) {
+      paymentMap[method] = { count: 0, amount: 0 };
+    }
+    paymentMap[method].count += 1;
+    paymentMap[method].amount += Number(t.total) || 0;
+  });
+
+  return {
+    totalRevenue,
+    totalTransactions,
+    totalItems,
+    avgBill,
+    branches: Object.values(branchMap).sort((a, b) => b.revenue - a.revenue),
+    topProducts: Object.entries(productMap)
+      .map(([id, data]) => ({ id, ...data }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 10),
+    cashiers: Object.entries(cashierMap)
+      .map(([name, data]) => ({ name, ...data, avgBill: data.count > 0 ? data.revenue / data.count : 0 }))
+      .sort((a, b) => b.revenue - a.revenue),
+    paymentMethods: Object.entries(paymentMap)
+      .map(([method, data]) => ({ method, ...data, percentage: totalRevenue > 0 ? (data.amount / totalRevenue * 100) : 0 }))
+      .sort((a, b) => b.amount - a.amount)
+  };
+}
+
+function drawSalesTrendChart(transactions, period) {
+  const canvas = document.getElementById('sales-trend-chart');
+  if (!canvas) return;
+  
+  const ctx = canvas.getContext('2d');
+  const now = new Date();
+  const data = [];
+  const labels = [];
+  
+  let days = 7;
+  if (period === 'month') days = 30;
+  if (period === 'all') days = 90;
+  
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date(now);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().split('T')[0];
+    labels.push(date.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }));
+    
+    const dayTotal = transactions
+      .filter(t => t.timestamp.substring(0, 10) === dateStr)
+      .reduce((sum, t) => sum + (Number(t.total) || 0), 0);
+    data.push(dayTotal);
+  }
+  
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Draw simple line chart
+  const maxValue = Math.max(...data, 1);
+  const padding = 40;
+  const width = canvas.width - 2 * padding;
+  const height = canvas.height - 2 * padding;
+  const pointSpacing = width / (data.length - 1 || 1);
+  
+  // Draw grid
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padding + (height / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding, y);
+    ctx.lineTo(canvas.width - padding, y);
+    ctx.stroke();
+  }
+  
+  // Draw line
+  ctx.strokeStyle = '#2563eb';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  data.forEach((value, index) => {
+    const x = padding + index * pointSpacing;
+    const y = canvas.height - padding - (value / maxValue) * height;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  
+  // Draw points
+  ctx.fillStyle = '#2563eb';
+  data.forEach((value, index) => {
+    const x = padding + index * pointSpacing;
+    const y = canvas.height - padding - (value / maxValue) * height;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, 2 * Math.PI);
+    ctx.fill();
+  });
+  
+  // Draw labels (every 3rd)
+  ctx.fillStyle = '#666';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  labels.forEach((label, index) => {
+    if (index % Math.ceil(labels.length / 4) === 0) {
+      const x = padding + index * pointSpacing;
+      ctx.fillText(label, x, canvas.height - 10);
+    }
+  });
+}
+
+function renderAnalytics(state) {
+  const period = getAnalyticsPeriod();
+  const analytics = calculateAnalytics(state, period);
+  
+  // Update summary cards
+  document.getElementById('analytics-revenue').textContent = formatCurrency(analytics.totalRevenue);
+  document.getElementById('analytics-trans-count').textContent = analytics.totalTransactions;
+  document.getElementById('analytics-items-count').textContent = analytics.totalItems;
+  document.getElementById('analytics-avg-bill').textContent = formatCurrency(analytics.avgBill);
+  
+  // Draw chart
+  drawSalesTrendChart(state.transactions || [], period);
+  
+  // Branch Performance Table
+  const branchTable = document.getElementById('branch-performance-table');
+  branchTable.innerHTML = analytics.branches.map(branch => `
+    <tr>
+      <td><strong>${escapeHtml(branch.name)}</strong></td>
+      <td>${formatCurrency(branch.revenue)}</td>
+      <td>${branch.count}</td>
+      <td>${formatCurrency(branch.count > 0 ? branch.revenue / branch.count : 0)}</td>
+    </tr>
+  `).join('');
+  
+  // Top Products Table
+  const productsTable = document.getElementById('top-products-table');
+  productsTable.innerHTML = analytics.topProducts.map((product, idx) => `
+    <tr>
+      <td>${idx + 1}</td>
+      <td><strong>${escapeHtml(product.name)}</strong></td>
+      <td>${product.qty}</td>
+      <td>${formatCurrency(product.revenue)}</td>
+    </tr>
+  `).join('');
+  
+  // Cashier Performance Table
+  const cashierTable = document.getElementById('cashier-performance-table');
+  cashierTable.innerHTML = analytics.cashiers.map(cashier => `
+    <tr>
+      <td><strong>${escapeHtml(cashier.name)}</strong></td>
+      <td>${cashier.count}</td>
+      <td>${formatCurrency(cashier.revenue)}</td>
+      <td>${formatCurrency(cashier.avgBill)}</td>
+    </tr>
+  `).join('');
+  
+  // Payment Methods Table
+  const paymentTable = document.getElementById('payment-methods-table');
+  paymentTable.innerHTML = analytics.paymentMethods.map(payment => `
+    <tr>
+      <td><strong>${escapeHtml(payment.method)}</strong></td>
+      <td>${payment.count}</td>
+      <td>${formatCurrency(payment.amount)}</td>
+      <td>${payment.percentage.toFixed(1)}%</td>
+    </tr>
+  `).join('');
+}
+
+// Returns & Refund Functions
+function loadReturns() {
+  if (typeof window === 'undefined') return [];
+  const raw = window.localStorage.getItem('billing-inventory-hub-returns');
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch { return []; }
+}
+
+function saveReturns() {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem('billing-inventory-hub-returns', JSON.stringify(returns)); } catch (e) {}
+}
+
+function renderReturns(state) {
+  const historyList = document.getElementById('returns-history-list');
+  if (!historyList) return;
+
+  if (!returns.length) {
+    historyList.innerHTML = '<p class="muted" style="padding:16px;">No returns processed yet.</p>';
+    return;
+  }
+
+  historyList.innerHTML = returns
+    .slice()
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+    .map(ret => {
+      const reasonLabels = {
+        defective: 'Defective / Damaged',
+        wrong_item: 'Wrong Item',
+        customer_change: 'Customer Changed Mind',
+        quality: 'Quality Issue',
+        other: 'Other'
+      };
+      const refundLabels = {
+        full: 'Full Refund',
+        partial: 'Partial Refund',
+        store_credit: 'Store Credit',
+        exchange: 'Exchange Only'
+      };
+      return `
+        <div class="return-history-item">
+          <div class="return-history-header">
+            <div>
+              <strong class="return-bill-ref">Return #${ret.id}</strong>
+              <span class="return-original-ref">→ Original: ${escapeHtml(ret.originalBillNumber)}</span>
+            </div>
+            <span class="return-date">${ret.date}</span>
+          </div>
+          <div class="return-history-body">
+            <div class="return-history-items">
+              ${ret.items.map(i => `<span class="return-item-tag">${escapeHtml(i.name)} × ${i.qty}</span>`).join('')}
+            </div>
+            <div class="return-history-meta">
+              <span class="return-reason-tag">${reasonLabels[ret.reason] || ret.reason}</span>
+              <span class="return-refund-tag">${refundLabels[ret.refundType] || ret.refundType}</span>
+              <strong class="return-refund-amount">-${formatCurrency(ret.refundAmount)}</strong>
+            </div>
+          </div>
+          ${ret.notes ? `<div class="return-notes-display">${escapeHtml(ret.notes)}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+}
+
+function processReturn(state, originalTransaction, selectedItems, reason, refundType, notes) {
+  if (!originalTransaction || !selectedItems.length) return null;
+
+  // Calculate refund amount from selected items
+  const originalItemsMap = {};
+  originalTransaction.items.forEach(item => {
+    originalItemsMap[item.name] = item;
+  });
+
+  let refundAmount = 0;
+  selectedItems.forEach(item => {
+    const originalPrice = item.unitPrice || 0;
+    refundAmount += originalPrice * item.qty;
+  });
+
+  // Apply original discount to refund
+  if (originalTransaction.discountPercent) {
+    refundAmount -= refundAmount * (originalTransaction.discountPercent / 100);
+  }
+
+  // Restore stock for returned items
+  const newInventory = state.inventory.map(invItem => {
+    const returnedItem = selectedItems.find(si => si.inventoryId === invItem.id);
+    if (returnedItem) {
+      return { ...invItem, stock: invItem.stock + returnedItem.qty };
+    }
+    return invItem;
+  });
+
+  // Create return record
+  const returnRecord = {
+    id: `RET-${Date.now()}`,
+    originalTransactionId: originalTransaction.id,
+    originalBillNumber: originalTransaction.billNumber || originalTransaction.id,
+    date: new Date().toLocaleString(),
+    items: selectedItems.map(i => ({ name: i.name, qty: i.qty })),
+    refundAmount,
+    reason,
+    refundType,
+    notes: notes || ''
+  };
+
+  returns.unshift(returnRecord);
+  saveReturns();
+
+  // Update state with new inventory
+  const newState = { ...state, inventory: newInventory };
+  return { returnRecord, newState, refundAmount };
+}
+
+// Customer Management & Loyalty Functions
+function getOrCreateCustomer(phone, transactionDetails = null) {
+  if (!phone || phone.trim() === '') return null;
+  
+  const cleanPhone = phone.trim();
+  let customer = customers.find(c => c.phone === cleanPhone);
+  
+  if (!customer) {
+    customer = {
+      id: `cust_${Date.now()}`,
+      phone: cleanPhone,
+      name: transactionDetails?.customerName || 'Customer ' + cleanPhone.slice(-4),
+      createdAt: new Date().toISOString(),
+      totalSpent: 0,
+      transactionCount: 0,
+      loyaltyPoints: 0,
+      transactions: []
+    };
+    customers.push(customer);
+    saveCustomers();
+  }
+  
+  return customer;
+}
+
+function addCustomerTransaction(customerId, transactionData) {
+  const customer = customers.find(c => c.id === customerId);
+  if (!customer) return;
+  
+  const pointsEarned = Math.floor(transactionData.total);
+  
+  customer.totalSpent += transactionData.total;
+  customer.transactionCount += 1;
+  customer.loyaltyPoints += pointsEarned;
+  customer.transactions.push({
+    id: transactionData.id,
+    date: transactionData.timestamp,
+    amount: transactionData.total,
+    items: (transactionData.items || []).map(i => `${i.name} (${i.qty})`).join(', '),
+    pointsEarned
+  });
+  
+  saveCustomers();
+}
+
+function saveCustomers() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem('billing-inventory-hub-customers', JSON.stringify(customers));
+  } catch (e) {}
+}
+
+function loadCustomers() {
+  if (typeof window === 'undefined') return [];
+  const raw = window.localStorage.getItem('billing-inventory-hub-customers');
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+function renderCustomers(state) {
+  const detailView = document.getElementById('customer-detail-view');
+  const customersList = document.getElementById('customers-list');
+  const emptyState = document.getElementById('customers-empty');
+  
+  if (selectedCustomerForDetail) {
+    // Show detail view
+    detailView.classList.remove('hidden');
+    const customer = customers.find(c => c.id === selectedCustomerForDetail);
+    
+    if (customer) {
+      document.getElementById('detail-customer-name').textContent = customer.name;
+      document.getElementById('detail-customer-phone').textContent = '📱 ' + customer.phone;
+      document.getElementById('detail-trans-count').textContent = customer.transactionCount;
+      document.getElementById('detail-total-spent').textContent = formatCurrency(customer.totalSpent);
+      document.getElementById('detail-avg-trans').textContent = formatCurrency(customer.transactionCount > 0 ? customer.totalSpent / customer.transactionCount : 0);
+      document.getElementById('detail-loyalty-points').textContent = customer.loyaltyPoints;
+      document.getElementById('detail-points-input').value = customer.loyaltyPoints;
+      
+      // Render transaction history
+      const historyTable = document.getElementById('detail-history-table');
+      historyTable.innerHTML = (customer.transactions || []).map(trans => `
+        <tr>
+          <td>${new Date(trans.date).toLocaleDateString('en-IN')}</td>
+          <td>${formatCurrency(trans.amount)}</td>
+          <td>${escapeHtml(trans.items)}</td>
+          <td>+${trans.pointsEarned}</td>
+        </tr>
+      `).join('');
+    }
+  } else {
+    // Show customers list
+    detailView.classList.add('hidden');
+    const searchTerm = (document.getElementById('customer-search')?.value || '').toLowerCase();
+    
+    const filtered = customers.filter(c => 
+      c.phone.includes(searchTerm) || c.name.toLowerCase().includes(searchTerm)
+    );
+    
+    if (filtered.length === 0) {
+      customersList.innerHTML = '';
+      emptyState.classList.remove('hidden');
+    } else {
+      emptyState.classList.add('hidden');
+      customersList.innerHTML = filtered
+        .sort((a, b) => b.transactionCount - a.transactionCount)
+        .map(customer => `
+          <tr>
+            <td>${escapeHtml(customer.phone)}</td>
+            <td>${escapeHtml(customer.name)}</td>
+            <td>${customer.transactionCount}</td>
+            <td>${formatCurrency(customer.totalSpent)}</td>
+            <td><span class="loyalty-badge">${customer.loyaltyPoints} pts</span></td>
+            <td><button class="view-customer-btn" data-customer-id="${customer.id}">View</button></td>
+          </tr>
+        `).join('');
+    }
+  }
 }
 
 function renderSettings(state) {
@@ -1085,6 +1575,60 @@ function renderSettings(state) {
   document.getElementById('shop-print-layout').value = profile.printLayout || 'standard';
   document.getElementById('shop-website').value = profile.website || '';
   document.getElementById('shop-footer').value = profile.footer || '';
+  
+  // Render thresholds
+  renderThresholds(state);
+}
+
+function renderThresholds(state) {
+  const container = document.getElementById('thresholds-container');
+  if (!container) return;
+  
+  const items = state.inventory || [];
+  if (!items.length) {
+    container.innerHTML = '<p class="muted">No inventory items yet. Add items in Admin Console to set thresholds.</p>';
+    return;
+  }
+  
+  container.innerHTML = items.map(item => {
+    const isLow = item.stock <= item.lowStock;
+    const statusClass = isLow ? 'threshold-low' : 'threshold-healthy';
+    
+    return `
+      <div class="threshold-item ${statusClass}">
+        <div class="threshold-header">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span class="threshold-status ${isLow ? 'alert-badge' : 'healthy-badge'}">
+            ${isLow ? '🔴 Low' : '✓ Healthy'}
+          </span>
+        </div>
+        <div class="threshold-info">
+          <span>Current: <strong>${item.stock}</strong></span>
+          <span>•</span>
+          <span>Min: <strong>${item.lowStock}</strong></span>
+          <span>•</span>
+          <span>SKU: ${escapeHtml(item.sku)}</span>
+        </div>
+        <div class="threshold-input-group">
+          <label>Set minimum threshold:</label>
+          <input type="number" min="0" value="${item.lowStock}" class="threshold-input" data-item-id="${item.id}" />
+          <button class="threshold-save-btn" data-item-id="${item.id}">Update</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function getLowStockAlerts(state) {
+  const items = state.inventory || [];
+  return items.filter(item => item.stock <= item.lowStock).map(item => ({
+    id: item.id,
+    name: item.name,
+    sku: item.sku,
+    current: item.stock,
+    threshold: item.lowStock,
+    reorderQty: Math.ceil(item.lowStock * 1.5)
+  }));
 }
 
 function renderQueue(state) {
@@ -1322,6 +1866,245 @@ function bindEvents(state) {
     });
   });
 
+  // Analytics period selector
+  const analyticsPeriod = document.getElementById('analytics-period');
+  if (analyticsPeriod) {
+    analyticsPeriod.addEventListener('change', () => {
+      renderAnalytics(state);
+    });
+  }
+
+  // Customer Management event listeners
+  const customerSearch = document.getElementById('customer-search');
+  if (customerSearch) {
+    customerSearch.addEventListener('input', () => {
+      renderCustomers(state);
+    });
+  }
+
+  // Customer list click handler
+  document.addEventListener('click', (event) => {
+    const viewBtn = event.target.closest('.view-customer-btn');
+    if (viewBtn) {
+      selectedCustomerForDetail = viewBtn.getAttribute('data-customer-id');
+      renderCustomers(state);
+      return;
+    }
+
+    const closeBtn = document.getElementById('close-customer-detail');
+    if (event.target === closeBtn) {
+      selectedCustomerForDetail = null;
+      renderCustomers(state);
+      return;
+    }
+
+    const updatePointsBtn = document.getElementById('update-points-btn');
+    if (event.target === updatePointsBtn) {
+      if (!selectedCustomerForDetail) return;
+      const customer = customers.find(c => c.id === selectedCustomerForDetail);
+      if (!customer) return;
+      
+      const newPoints = Number(document.getElementById('detail-points-input').value) || 0;
+      customer.loyaltyPoints = newPoints;
+      saveCustomers();
+      renderCustomers(state);
+      return;
+    }
+
+    const thresholdSaveBtn = event.target.closest('.threshold-save-btn');
+    if (thresholdSaveBtn) {
+      const itemId = thresholdSaveBtn.getAttribute('data-item-id');
+      const input = thresholdSaveBtn.previousElementSibling;
+      const newThreshold = Number(input.value) || 0;
+      
+      const itemIndex = state.inventory.findIndex(i => i.id === itemId);
+      if (itemIndex !== -1) {
+        state.inventory[itemIndex].lowStock = newThreshold;
+        saveState(state);
+        renderThresholds(state);
+        
+        // Show brief notification
+        const btn = thresholdSaveBtn;
+        const originalText = btn.textContent;
+        btn.textContent = '✓ Saved';
+        btn.style.backgroundColor = '#10b981';
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.backgroundColor = '';
+        }, 1500);
+      }
+      return;
+    }
+  });
+
+  // Return search button
+  document.getElementById('return-search-btn').addEventListener('click', () => {
+    const receiptInput = document.getElementById('return-receipt-input').value.trim();
+    const resultDiv = document.getElementById('return-search-result');
+    const formCard = document.getElementById('return-form-card');
+    const itemsList = document.getElementById('return-items-list');
+
+    if (!receiptInput) {
+      resultDiv.innerHTML = '<p class="return-search-error">Please enter a receipt/bill number.</p>';
+      resultDiv.classList.remove('hidden');
+      formCard.classList.add('hidden');
+      return;
+    }
+
+    // Find transaction by billNumber or id (case-insensitive)
+    const txn = state.transactions.find(t =>
+      (t.billNumber || '').toLowerCase() === receiptInput.toLowerCase() ||
+      t.id.toLowerCase() === receiptInput.toLowerCase()
+    );
+
+    if (!txn) {
+      resultDiv.innerHTML = `<p class="return-search-error">No transaction found for "<strong>${escapeHtml(receiptInput)}</strong>". Please check the receipt number.</p>`;
+      resultDiv.classList.remove('hidden');
+      formCard.classList.add('hidden');
+      pendingReturnTransaction = null;
+      return;
+    }
+
+    // Check if already fully returned
+    const existingReturns = returns.filter(r => r.originalTransactionId === txn.id);
+    const alreadyReturnedItemNames = existingReturns.flatMap(r => r.items.map(i => i.name));
+
+    pendingReturnTransaction = txn;
+
+    resultDiv.innerHTML = `
+      <div class="return-found-info">
+        <strong>Found: ${escapeHtml(txn.billNumber || txn.id)}</strong>
+        <span>${txn.timestamp}</span>
+        <span>Total: ${formatCurrency(txn.total)}</span>
+        <span>Payment: ${txn.paymentMethod}</span>
+      </div>
+    `;
+    resultDiv.classList.remove('hidden');
+
+    // Build per-item unit prices from total/subtotal
+    const itemCount = txn.items.length;
+    const avgPrice = itemCount > 0 ? (txn.subtotal || txn.total) / txn.items.reduce((s, i) => s + i.qty, 0) : 0;
+
+    // Build return items list
+    itemsList.innerHTML = txn.items.map((item, index) => {
+      // Attempt to find in inventory for accurate price and id
+      const invItem = state.inventory.find(inv => inv.name === item.name);
+      const unitPrice = invItem ? invItem.sellingPrice : avgPrice;
+      const inventoryId = invItem ? invItem.id : '';
+      const alreadyReturned = alreadyReturnedItemNames.includes(item.name);
+
+      return `
+        <div class="return-item-row ${alreadyReturned ? 'return-item-disabled' : ''}">
+          <label class="return-item-check">
+            <input type="checkbox" class="return-item-checkbox" 
+              data-name="${escapeHtml(item.name)}" 
+              data-unit-price="${unitPrice}" 
+              data-inventory-id="${inventoryId}"
+              data-max-qty="${item.qty}"
+              ${alreadyReturned ? 'disabled' : ''}
+            />
+            <span>${escapeHtml(item.name)}</span>
+          </label>
+          <div class="return-item-detail">
+            <span class="return-unit-price">${formatCurrency(unitPrice)} each</span>
+            <label class="return-qty-wrap">
+              Qty: <input type="number" min="1" max="${item.qty}" value="${item.qty}" 
+                class="return-qty-input" data-index="${index}"
+                ${alreadyReturned ? 'disabled' : ''}
+              />
+              <span class="return-qty-max">/ ${item.qty}</span>
+            </label>
+          </div>
+          ${alreadyReturned ? '<span class="already-returned-tag">Already returned</span>' : ''}
+        </div>
+      `;
+    }).join('');
+
+    formCard.classList.remove('hidden');
+    updateReturnSummary();
+  });
+
+  // Update summary on checkbox / qty change
+  document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('return-item-checkbox') || e.target.classList.contains('return-qty-input')) {
+      updateReturnSummary();
+    }
+  });
+
+  function updateReturnSummary() {
+    const checkboxes = document.querySelectorAll('.return-item-checkbox:checked');
+    let totalQty = 0;
+    let totalRefund = 0;
+    checkboxes.forEach(cb => {
+      const row = cb.closest('.return-item-row');
+      const qtyInput = row.querySelector('.return-qty-input');
+      const qty = Math.min(Number(qtyInput?.value || 1), Number(cb.dataset.maxQty || 1));
+      const unitPrice = Number(cb.dataset.unitPrice || 0);
+      totalQty += qty;
+      totalRefund += qty * unitPrice;
+    });
+    if (pendingReturnTransaction?.discountPercent) {
+      totalRefund -= totalRefund * (pendingReturnTransaction.discountPercent / 100);
+    }
+    document.getElementById('return-item-count').textContent = totalQty;
+    document.getElementById('return-refund-amount').textContent = formatCurrency(totalRefund);
+  }
+
+  // Process return button
+  document.getElementById('process-return-btn').addEventListener('click', () => {
+    if (!pendingReturnTransaction) return;
+
+    const checkboxes = document.querySelectorAll('.return-item-checkbox:checked');
+    if (!checkboxes.length) {
+      alert('Please select at least one item to return.');
+      return;
+    }
+
+    const selectedItems = Array.from(checkboxes).map(cb => {
+      const row = cb.closest('.return-item-row');
+      const qtyInput = row.querySelector('.return-qty-input');
+      const qty = Math.min(Number(qtyInput?.value || 1), Number(cb.dataset.maxQty || 1));
+      return {
+        name: cb.dataset.name,
+        qty,
+        unitPrice: Number(cb.dataset.unitPrice || 0),
+        inventoryId: cb.dataset.inventoryId
+      };
+    });
+
+    const reason = document.getElementById('return-reason').value;
+    const refundType = document.getElementById('return-refund-type').value;
+    const notes = document.getElementById('return-notes').value.trim();
+
+    const result = processReturn(state, pendingReturnTransaction, selectedItems, reason, refundType, notes);
+    if (!result) return;
+
+    state = result.newState;
+    saveState(state);
+    renderView(state);
+
+    // Show confirmation
+    const formCard = document.getElementById('return-form-card');
+    const resultDiv = document.getElementById('return-search-result');
+    formCard.classList.add('hidden');
+    resultDiv.innerHTML = `
+      <div class="return-success-banner">
+        <strong>✓ Return processed successfully!</strong>
+        <span>Refund: ${formatCurrency(result.refundAmount)} • Items: ${selectedItems.map(i => `${i.name} × ${i.qty}`).join(', ')}</span>
+      </div>
+    `;
+    document.getElementById('return-receipt-input').value = '';
+    pendingReturnTransaction = null;
+  });
+
+  // Cancel return button
+  document.getElementById('cancel-return-btn').addEventListener('click', () => {
+    document.getElementById('return-form-card').classList.add('hidden');
+    document.getElementById('return-search-result').classList.add('hidden');
+    document.getElementById('return-receipt-input').value = '';
+    pendingReturnTransaction = null;
+  });
+
   document.getElementById('branch-form').addEventListener('submit', (event) => {
     event.preventDefault();
     const name = document.getElementById('branch-name').value.trim();
@@ -1507,11 +2290,22 @@ function bindEvents(state) {
   document.getElementById('checkout-btn').addEventListener('click', () => {
     const branchId = document.getElementById('cashier-branch').value;
     const paymentMethod = document.getElementById('payment-method').value;
+    const customerPhone = document.getElementById('customer-phone').value;
+    
     const result = checkoutCart(state, branchId, paymentMethod, 'Cashier', activeDiscount);
     if (!result.success) {
       alert(result.message);
       return;
     }
+    
+    // Save customer transaction if phone was provided
+    if (customerPhone && customerPhone.trim()) {
+      const customer = getOrCreateCustomer(customerPhone);
+      if (customer) {
+        addCustomerTransaction(customer.id, result.transaction);
+      }
+    }
+    
     state = result.nextState;
     shopProfile = state.shopProfile || shopProfile;
     lastReceipt = result.transaction;
@@ -1521,6 +2315,7 @@ function bindEvents(state) {
     priceOverride = null;
     document.getElementById('discount-input').value = '0';
     document.getElementById('price-override-input').value = '';
+    document.getElementById('customer-phone').value = '';
     renderView(state);
   });
 
@@ -1550,6 +2345,8 @@ function initializeApp() {
   const initialState = loadState();
   let state = initialState;
   shopProfile = state.shopProfile || shopProfile;
+  customers = loadCustomers();
+  returns = loadReturns();
   
   // Load auth users from Firebase if available (for cross-device sync)
   if (firebaseEnabled) {
