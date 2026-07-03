@@ -40,7 +40,8 @@
           <span id="auth-user-label" class="status-pill">Not signed in</span>
           <button id="logout-btn" class="ghost-btn hidden">Logout</button>
           <div class="view-switcher">
-            <button class="view-btn active" data-view="admin">Admin</button>
+            <button class="view-btn" data-view="admin">Admin</button>
+            <button class="view-btn" data-view="inventory">Inventory</button>
             <button class="view-btn" data-view="cashier">Cashier</button>
             <button class="view-btn" data-view="queue">Queue</button>
             <button class="view-btn" data-view="customers">Customers</button>
@@ -341,11 +342,76 @@
                   <tbody id="inventory-report-list"></tbody>
                 </table>
               </div>
-            </div>
-          </div>
-        </section>
+</div>
+           </div>
+         </section>
 
-        <section id="cashier-panel" class="panel hidden" aria-labelledby="cashier-title">
+         <section id="inventory-panel" class="panel hidden" aria-labelledby="inventory-title">
+           <div class="panel-header">
+             <div>
+               <p class="eyebrow">Product Management</p>
+               <h2 id="inventory-title">Inventory Management</h2>
+             </div>
+           </div>
+
+           <div class="card">
+             <div class="inventory-toolbar">
+               <div class="inventory-search-row">
+                 <input id="inventory-search-input" type="text" placeholder="Search by name, SKU, or barcode..." />
+                 <select id="inventory-branch-filter">
+                   <option value="all">All Branches</option>
+                 </select>
+                 <select id="inventory-category-filter">
+                   <option value="all">All Categories</option>
+                 </select>
+               </div>
+               <div class="inventory-actions">
+                 <button id="export-inventory-json-btn" class="ghost-btn">⬇ Export JSON</button>
+                 <button id="export-inventory-csv-btn" class="ghost-btn">⬇ Export CSV</button>
+                 <label class="import-label" title="Import inventory from JSON">
+                   ⬆ Import JSON
+                   <input type="file" id="import-inventory-json" accept=".json" style="display:none" />
+                 </label>
+                 <label class="import-label" title="Import inventory from CSV">
+                   ⬆ Import CSV
+                   <input type="file" id="import-inventory-csv-inline" accept=".csv" style="display:none" />
+                 </label>
+                 <a id="inventory-csv-template-link" href="#" class="csv-template-btn">⬇ CSV Template</a>
+               </div>
+             </div>
+             <p id="inventory-import-status" class="backup-status"></p>
+           </div>
+
+           <div class="card">
+             <div class="panel-header compact">
+               <h3>Inventory Items</h3>
+               <span id="inventory-items-count" class="muted"></span>
+             </div>
+             <div class="table-wrap">
+               <table>
+                 <thead>
+                   <tr>
+                     <th>Item</th>
+                     <th>SKU</th>
+                     <th>Barcode</th>
+                     <th>Category</th>
+                     <th>Branch</th>
+                     <th>Stock</th>
+                     <th>Cost</th>
+                     <th>MRP</th>
+                     <th>Selling</th>
+                     <th>Tax%</th>
+                     <th>Status</th>
+                     <th>Action</th>
+                   </tr>
+                 </thead>
+                 <tbody id="inventory-items-table"></tbody>
+               </table>
+             </div>
+           </div>
+         </section>
+
+         <section id="cashier-panel" class="panel hidden" aria-labelledby="cashier-title">
           <div class="panel-header">
             <div>
               <p class="eyebrow">POS</p>

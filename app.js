@@ -10,7 +10,7 @@ const DEFAULT_AUTH_USERS = [
 
 let currentView = 'admin';
 let currentUser = null;
-let authUsers = [];  // Will be populated in initializeApp
+let authUsers = typeof window !== 'undefined' ? [] : [...DEFAULT_AUTH_USERS]; // Will be populated in initializeApp
 let cart = [];
 let lastReceipt = null;
 let heldBills = [];
@@ -599,6 +599,11 @@ function loadAuthUsers() {
   }
 }
 
+// Initialize authUsers for non-browser environment (tests)
+if (typeof window === 'undefined') {
+  authUsers = loadAuthUsers();
+}
+
 function persistAuthUsers(users) {
   if (typeof window === 'undefined') return;
   try {
@@ -756,7 +761,7 @@ export function buildReceiptHtml(receipt = {}, branchName = 'Store') {
         <div><span>SGST @ ${s.rate/2}%</span><strong>${formatCurrency(s.tax/2)}</strong></div>
       `).join('');
   } else if (taxAmount > 0) {
-    taxLinesHTML = `<div><span>${escapeHtml(taxLabel)} (${taxRate}%)</span><strong>${formatCurrency(taxAmount)}</strong></div>`;
+    taxLinesHTML = `<div><span>Tax (${escapeHtml(taxLabel)})</span><strong>${formatCurrency(taxAmount)}</strong></div>`;
   }
 
   return `<!DOCTYPE html>
@@ -1133,6 +1138,78 @@ export function buildReportData(state) {
   };
 }
 
+function renderInventory(state) {
+  const searchInput = document.getElementById('inventory-search-input');
+  const branchFilter = document.getElementById('inventory-branch-filter');
+  const categoryFilter = document.getElementById('inventory-category-filter');
+  const itemsTable = document.getElementById('inventory-items-table');
+  const itemsCount = document.getElementById('inventory-items-count');
+  
+  if (!itemsTable) return;
+  
+  // Populate branch filter
+  if (branchFilter && branchFilter.options.length <= 1) {
+    branchFilter.innerHTML = '<option value="all">All Branches</option>' + 
+      state.branches.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  }
+  
+  // Populate category filter
+  const categories = [...new Set(state.inventory.map(i => i.category).filter(Boolean))];
+  if (categoryFilter && categoryFilter.options.length <= 1) {
+    categoryFilter.innerHTML = '<option value="all">All Categories</option>' + 
+      categories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  }
+  
+  // Apply filters
+  const search = (searchInput?.value || '').toLowerCase();
+  const branchValue = branchFilter?.value || 'all';
+  const categoryValue = categoryFilter?.value || 'all';
+  
+  let filtered = state.inventory;
+  if (search) {
+    filtered = filtered.filter(item => 
+      item.name.toLowerCase().includes(search) ||
+      (item.sku || '').toLowerCase().includes(search) ||
+      (item.barcode || '').toLowerCase().includes(search)
+    );
+  }
+  if (branchValue !== 'all') {
+    filtered = filtered.filter(item => item.branchId === branchValue);
+  }
+  if (categoryValue !== 'all') {
+    filtered = filtered.filter(item => item.category === categoryValue);
+  }
+  
+  // Create branch lookup
+  const branchLookup = Object.fromEntries(state.branches.map(b => [b.id, b.name]));
+  
+  itemsTable.innerHTML = filtered.map(item => {
+    const isLow = item.stock <= item.lowStock;
+    const statusCls = isLow ? 'status-low' : 'status-ok';
+    return `
+      <tr>
+        <td>${escapeHtml(item.name)}</td>
+        <td>${escapeHtml(item.sku || '-')}</td>
+        <td>${escapeHtml(item.barcode || '-')}</td>
+        <td>${escapeHtml(item.category || '-')}</td>
+        <td>${escapeHtml(branchLookup[item.branchId] || 'Unknown')}</td>
+        <td>${item.stock}</td>
+        <td>${formatCurrency(item.costPrice)}</td>
+        <td>${formatCurrency(item.mrp)}</td>
+        <td>${formatCurrency(item.sellingPrice)}</td>
+        <td>${item.itemTaxRate !== undefined ? item.itemTaxRate + '%' : (state.shopProfile?.taxRate || 0) + '%'}</td>
+        <td><span class="status-badge ${statusCls}">${isLow ? 'Low Stock' : 'In Stock'}</span></td>
+        <td>
+          <button class="edit-item-btn" data-item-id="${item.id}">✏️ Edit</button>
+          <button class="delete-item-btn" data-item-id="${item.id}">🗑️ Delete</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+  
+  if (itemsCount) itemsCount.textContent = `${filtered.length} items`;
+}
+
 function renderAdmin(state) {
   const branchSelect = document.getElementById('inventory-branch');
   const inventoryTable = document.getElementById('inventory-table');
@@ -1356,7 +1433,7 @@ function renderCashier(state, branchId) {
 }
 
 function getAllowedViews() {
-  if (currentUser?.role === 'admin') return ['admin', 'cashier', 'queue', 'customers', 'returns', 'analytics', 'employees', 'audit', 'settings'];
+  if (currentUser?.role === 'admin') return ['admin', 'inventory', 'cashier', 'queue', 'customers', 'returns', 'analytics', 'employees', 'audit', 'settings'];
   if (currentUser?.role === 'cashier') return ['cashier', 'queue', 'customers', 'returns'];
   return [];
 }
@@ -1421,6 +1498,7 @@ function renderView(state) {
   }
 
   document.getElementById('admin-panel').classList.toggle('hidden', currentView !== 'admin');
+  document.getElementById('inventory-panel').classList.toggle('hidden', currentView !== 'inventory');
   document.getElementById('cashier-panel').classList.toggle('hidden', currentView !== 'cashier');
   document.getElementById('queue-panel').classList.toggle('hidden', currentView !== 'queue');
   document.getElementById('customers-panel').classList.toggle('hidden', currentView !== 'customers');
@@ -1435,6 +1513,7 @@ function renderView(state) {
     button.classList.toggle('active', button.dataset.view === currentView && allowed);
   });
   renderAdmin(state);
+  renderInventory(state);
   renderCashier(state, document.getElementById('cashier-branch')?.value || state.branches[0]?.id);
   renderQueue(state);
   renderCustomers(state);
@@ -2154,6 +2233,32 @@ function generateInventoryCSVTemplate() {
   downloadCSV('inventory-template', headers, [example]);
 }
 
+function exportInventoryJSON(state) {
+  const inventoryData = {
+    exportedAt: new Date().toISOString(),
+    items: state.inventory.map(item => ({
+      sku: item.sku,
+      barcode: item.barcode,
+      name: item.name,
+      category: item.category,
+      brand: item.brand,
+      unit: item.unit,
+      costPrice: item.costPrice,
+      mrp: item.mrp,
+      sellingPrice: item.sellingPrice,
+      stock: item.stock,
+      lowStock: item.lowStock,
+      hsnCode: item.hsnCode,
+      itemTaxRate: item.itemTaxRate,
+      taxInclusive: item.taxInclusive,
+      description: item.description,
+      branchId: item.branchId
+    }))
+  };
+  downloadJSON('inventory', inventoryData);
+  logAudit('INVENTORY_EXPORT', AUDIT_CATEGORIES.INVENTORY, `Inventory exported: ${state.inventory.length} items`);
+}
+
 function importInventoryFromCSV(file, state, onComplete) {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -2560,6 +2665,123 @@ function bindEvents(state) {
   if (analyticsPeriod) {
     analyticsPeriod.addEventListener('change', () => {
       renderAnalytics(state);
+    });
+  }
+
+  // Inventory panel event listeners
+  const inventorySearchInput = document.getElementById('inventory-search-input');
+  if (inventorySearchInput) {
+    inventorySearchInput.addEventListener('input', () => {
+      renderInventory(state);
+    });
+  }
+
+  const inventoryBranchFilter = document.getElementById('inventory-branch-filter');
+  if (inventoryBranchFilter) {
+    inventoryBranchFilter.addEventListener('change', () => {
+      renderInventory(state);
+    });
+  }
+
+  const inventoryCategoryFilter = document.getElementById('inventory-category-filter');
+  if (inventoryCategoryFilter) {
+    inventoryCategoryFilter.addEventListener('change', () => {
+      renderInventory(state);
+    });
+  }
+
+  // Export inventory JSON button
+  const exportInventoryJsonBtn = document.getElementById('export-inventory-json-btn');
+  if (exportInventoryJsonBtn) {
+    exportInventoryJsonBtn.addEventListener('click', () => {
+      exportInventoryJSON(state);
+    });
+  }
+
+  // Export inventory CSV button
+  const exportInventoryCsvBtn = document.getElementById('export-inventory-csv-btn');
+  if (exportInventoryCsvBtn) {
+    exportInventoryCsvBtn.addEventListener('click', () => {
+      exportInventoryCSV(state);
+    });
+  }
+
+  // Import inventory JSON
+  const importInventoryJson = document.getElementById('import-inventory-json');
+  if (importInventoryJson) {
+    importInventoryJson.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (!data.items || !Array.isArray(data.items)) {
+            document.getElementById('inventory-import-status').textContent = 'Invalid JSON: expected { items: [...] }';
+            return;
+          }
+          let imported = 0, skipped = 0;
+          data.items.forEach(item => {
+            if (!item.name || !item.sku) { skipped++; return; }
+            if (state.inventory.some(i => i.sku === item.sku)) { skipped++; return; }
+            state = addInventoryItem(state, {
+              branchId: item.branchId || state.branches[0]?.id || 'branch-1',
+              sku: item.sku,
+              barcode: item.barcode || '',
+              name: item.name,
+              category: item.category || '',
+              brand: item.brand || '',
+              unit: item.unit || '',
+              costPrice: Number(item.costPrice || 0),
+              mrp: Number(item.mrp || item.sellingPrice || 0),
+              sellingPrice: Number(item.sellingPrice || 0),
+              stock: Number(item.stock || 0),
+              lowStock: Number(item.lowStock || 0),
+              hsnCode: item.hsnCode || '',
+              itemTaxRate: item.itemTaxRate !== undefined ? Number(item.itemTaxRate) : undefined,
+              description: item.description || ''
+            });
+            imported++;
+          });
+          saveState(state);
+          logAudit('INVENTORY_IMPORT', AUDIT_CATEGORIES.INVENTORY, `JSON import: ${imported} items added, ${skipped} skipped`);
+          document.getElementById('inventory-import-status').textContent = `✓ Imported ${imported} items. ${skipped} skipped (duplicates or missing data).`;
+          renderInventory(state);
+        } catch (err) {
+          document.getElementById('inventory-import-status').textContent = `Error: ${err.message}`;
+        }
+      };
+      reader.readAsText(file);
+      event.target.value = '';
+    });
+  }
+
+  // Import inventory CSV inline
+  const importInventoryCsvInline = document.getElementById('import-inventory-csv-inline');
+  if (importInventoryCsvInline) {
+    importInventoryCsvInline.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      importInventoryFromCSV(file, state, (success, message, newState) => {
+        const statusEl = document.getElementById('inventory-import-status');
+        if (success && newState) {
+          state = newState;
+          saveState(state);
+          logAudit('INVENTORY_IMPORT', AUDIT_CATEGORIES.INVENTORY, `CSV import from inventory panel: ${state.inventory.length} items`);
+          renderInventory(state);
+        }
+        if (statusEl) statusEl.textContent = message;
+      });
+      event.target.value = '';
+    });
+  }
+
+  // CSV template link for inventory panel
+  const inventoryCsvTemplateLink = document.getElementById('inventory-csv-template-link');
+  if (inventoryCsvTemplateLink) {
+    inventoryCsvTemplateLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      generateInventoryCSVTemplate();
     });
   }
 
